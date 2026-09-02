@@ -1,0 +1,82 @@
+# ==========================================
+# JELCOM-ENVIOS · .gitignore
+# ==========================================
+
+# --- Dependencias ---
+node_modules/
+backend/node_modules/
+frontend/node_modules/
+.pnp
+.pnp.js
+
+# --- Variables de entorno / credenciales ---
+.env
+.env.local
+.env.*.local
+backend/.env
+frontend/.env
+*.env
+!.env.example
+!backend/.env.example
+!frontend/.env.example
+
+# --- Base de datos SQLite (datos reales de clientes) ---
+*.sqlite
+*.sqlite3
+*.db
+backend/data/*.sqlite
+backend/database/*.sqlite
+backend/db/*.sqlite
+
+# --- Build / dist ---
+dist/
+build/
+frontend/dist/
+frontend/build/
+.vite/
+.cache/
+
+# --- Logs ---
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- Archivos de datos subidos / generados (bases de clientes, reportes) ---
+uploads/
+backend/uploads/
+temp/
+tmp/
+backend/temp/
+backend/tmp/
+*.xlsx
+*.xls
+*.csv
+!**/plantillas/**/*.xlsx
+!**/templates/**/*.xlsx
+
+# --- Sistema operativo ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Editores / IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- Railway / despliegue ---
+.railway/
+
+# --- Certificados / claves ---
+*.pem
+*.key
+*.crt
+
+# --- Otros ---
+coverage/
+.eslintcache
+*.tsbuildinfo
