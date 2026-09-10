@@ -80,3 +80,4 @@ desktop.ini
 coverage/
 .eslintcache
 *.tsbuildinfo
+backend/cuentas_export.json
