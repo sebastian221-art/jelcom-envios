@@ -42,26 +42,12 @@ function ModoEnvio() {
   const [estado, setEstado] = useState(null);
   const [enviando, setEnviando] = useState(false);
   const [cargando, setCargando] = useState(false);
-  const [ngrokUrl, setNgrokUrl] = useState("");
-  const [ngrokGuardado, setNgrokGuardado] = useState(false);
   const archivoRef = useRef();
   const ultimoLog = useRef(0);
   const logsBox = useRef();
 
   // preselecciona la primera voz guardada apenas carguen
   useEffect(() => { if (voces.length && !vozId) setVozId(voces[0].voice_id); }, [voces]);
-
-  useEffect(() => {
-    fetch("/api/voz/public-url").then(r => r.json()).then(d => setNgrokUrl(d.url || ""));
-  }, []);
-
-  async function guardarNgrok() {
-    const r = await fetch("/api/voz/public-url", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: ngrokUrl }),
-    }).then(r => r.json());
-    setNgrokUrl(r.url || "");
-    setNgrokGuardado(true); setTimeout(() => setNgrokGuardado(false), 2000);
-  }
 
   useEffect(() => {
     if (!envioId) return;
@@ -130,22 +116,6 @@ function ModoEnvio() {
 
   return (
     <>
-      <div className="card" style={{ borderLeft: "4px solid var(--naranja)" }}>
-        <h2>🌐 URL pública (ngrok)</h2>
-        <div className="hint" style={{ marginTop: -6 }}>
-          Para que Twilio pueda conectar las llamadas, pega aquí la URL que te da ngrok (ej. https://abc123.ngrok-free.app).
-          Cada vez que reinicies ngrok, actualízala aquí. No necesitas tocar el .env.
-        </div>
-        <div style={{ display: "flex", gap: 10 }}>
-          <input type="text" value={ngrokUrl} onChange={e => setNgrokUrl(e.target.value)}
-                 placeholder="https://xxxx.ngrok-free.app" style={{ marginBottom: 0 }} />
-          <button className="naranja" onClick={guardarNgrok} style={{ whiteSpace: "nowrap" }}>
-            {ngrokGuardado ? "✓ Guardada" : "Guardar URL"}
-          </button>
-        </div>
-        {ngrokUrl && <div className="hint" style={{ marginTop: 10 }}>URL activa: <strong>{ngrokUrl}</strong></div>}
-      </div>
-
       <div className="card">
         <h2><span className="num">1</span> Contenido</h2>
         <SelectorCliente valor={clienteId} onChange={setClienteId} disabled={!!envioId} />

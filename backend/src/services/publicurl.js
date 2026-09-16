@@ -1,12 +1,8 @@
-// Devuelve la URL pública (ngrok/Railway) para los webhooks de Twilio.
-// Prioridad: lo que el usuario guardó en la página de Bot de voz (BD) > el .env.
-const { db } = require("../db");
-
+// Devuelve la URL pública del backend para los webhooks de Twilio.
+// Antes se guardaba manualmente (ngrok, que cambiaba cada reinicio).
+// Ahora el backend vive fijo en Railway, así que siempre se toma de
+// la variable de entorno PUBLIC_URL.
 function obtenerPublicUrl() {
-  try {
-    const row = db.prepare("SELECT valor FROM configuracion WHERE clave='public_url'").get();
-    if (row && row.valor && row.valor.trim()) return row.valor.trim().replace(/\/+$/, "");
-  } catch (e) { /* si la tabla no existe aún, cae al .env */ }
   return (process.env.PUBLIC_URL || "").replace(/\/+$/, "");
 }
 

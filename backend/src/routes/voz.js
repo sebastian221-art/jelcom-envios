@@ -130,16 +130,4 @@ router.post("/generar-audio", express.json(), async (req, res) => {
   res.json({ ok: true, archivo: r.archivo, url: `${publicUrl()}/api/voz/audio/${r.archivo}` });
 });
 
-// Leer/guardar la URL pública (ngrok) desde la página de Bot de voz
-router.get("/public-url", (req, res) => {
-  res.json({ url: obtenerPublicUrl() });
-});
-router.post("/public-url", express.json(), (req, res) => {
-  const { url } = req.body;
-  const limpia = (url || "").trim().replace(/\/+$/, "");
-  db.prepare("INSERT INTO configuracion (clave, valor) VALUES ('public_url', ?) ON CONFLICT(clave) DO UPDATE SET valor=?")
-    .run(limpia, limpia);
-  res.json({ ok: true, url: limpia });
-});
-
 module.exports = router;
