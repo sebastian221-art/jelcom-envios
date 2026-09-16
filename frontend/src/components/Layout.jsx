@@ -26,6 +26,7 @@ export default function Layout({ children }) {
           <NavLink to="/conexiones" className={link}><span className="ico">🔌</span> Conexiones</NavLink>
 
           <div className="grupo">Sistema</div>
+          <NavLink to="/api-externa" className={link}><span className="ico">🔑</span> API externa</NavLink>
           <NavLink to="/configuracion" className={link}><span className="ico">⚙️</span> Configuración</NavLink>
           <NavLink to="/usuarios" className={link}><span className="ico">👥</span> Usuarios</NavLink>
         </nav>
