@@ -264,3 +264,15 @@ CREATE TABLE IF NOT EXISTS voces_elevenlabs (
   activa        INTEGER DEFAULT 1,
   creada_en     TEXT DEFAULT (datetime('now','localtime'))
 );
+
+-- ─────────────────────────────────────────────────────────────
+--  API KEYS — acceso de sistemas externos (Satella, PSI, hospital, etc.)
+-- ─────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS api_keys (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  nombre      TEXT NOT NULL,
+  api_key     TEXT NOT NULL UNIQUE,
+  activa      INTEGER DEFAULT 1,
+  creada_en   TEXT DEFAULT (datetime('now','localtime')),
+  ultimo_uso  TEXT
+);
