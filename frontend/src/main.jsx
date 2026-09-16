@@ -14,6 +14,7 @@ import Conexiones from "./pages/Conexiones.jsx";
 import Historial from "./pages/Historial.jsx";
 import Placeholder from "./pages/Placeholder.jsx";
 import EnvioDetalle from "./pages/EnvioDetalle.jsx";
+import ApiExterna from "./pages/ApiExterna.jsx";
 import "./styles.css";
 
 ReactDOM.createRoot(document.getElementById("root")).render(
@@ -33,6 +34,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
           <Route path="/conexiones" element={<Conexiones />} />
           <Route path="/configuracion" element={<Configuracion />} />
           <Route path="/usuarios" element={<Usuarios />} />
+          <Route path="/api-externa" element={<ApiExterna />} />
         </Routes>
       </Layout>
     </BrowserRouter>
