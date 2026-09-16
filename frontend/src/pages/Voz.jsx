@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import SelectorCliente from "../components/SelectorCliente.jsx";
 
+const CLAVE_BORRADOR = "jelcom_borrador_voz";
+
 export default function Voz() {
   const [modo, setModo] = useState("A"); // A = enviar, B = voces
   return (
@@ -46,8 +48,31 @@ function ModoEnvio() {
   const ultimoLog = useRef(0);
   const logsBox = useRef();
 
-  // preselecciona la primera voz guardada apenas carguen
+  // preselecciona la primera voz guardada apenas carguen (si no hay una restaurada del borrador)
   useEffect(() => { if (voces.length && !vozId) setVozId(voces[0].voice_id); }, [voces]);
+
+  // Restaura el borrador guardado (si hay uno) apenas se monta la pantalla.
+  useEffect(() => {
+    try {
+      const g = JSON.parse(localStorage.getItem(CLAVE_BORRADOR) || "null");
+      if (g) {
+        if (g.clienteId != null) setClienteId(g.clienteId);
+        if (g.nombre) setNombre(g.nombre);
+        if (g.modoAudio) setModoAudio(g.modoAudio);
+        if (g.textoVoz) setTextoVoz(g.textoVoz);
+        if (g.audioUrl) setAudioUrl(g.audioUrl);
+        if (typeof g.conTecla === "boolean") setConTecla(g.conTecla);
+        if (g.teclaDesc) setTeclaDesc(g.teclaDesc);
+        if (g.vozId) setVozId(g.vozId);
+      }
+    } catch {}
+  }, []);
+
+  // Guarda el borrador cada vez que cambia algo, mientras no exista un envío creado.
+  useEffect(() => {
+    if (envioId) return;
+    localStorage.setItem(CLAVE_BORRADOR, JSON.stringify({ clienteId, nombre, modoAudio, textoVoz, audioUrl, conTecla, teclaDesc, vozId }));
+  }, [clienteId, nombre, modoAudio, textoVoz, audioUrl, conTecla, teclaDesc, vozId, envioId]);
 
   useEffect(() => {
     if (!envioId) return;
@@ -93,6 +118,7 @@ function ModoEnvio() {
       }),
     }).then(r => r.json());
     setEnvioId(c.id);
+    localStorage.removeItem(CLAVE_BORRADOR);
     const fd = new FormData(); fd.append("archivo", archivoRef.current.files[0]);
     const d = await fetch(`/api/envios/${c.id}/base`, { method: "POST", body: fd }).then(r => r.json());
     setDepu(d); setCargando(false);
@@ -109,7 +135,7 @@ function ModoEnvio() {
   }
   async function pausar() { await fetch(`/api/envios/${envioId}/pausar`, { method: "POST" }); }
   function descargar() { window.open(`/api/envios/${envioId}/informe`, "_blank"); }
-  function nueva() { setNombre(""); setTextoVoz(""); setAudioUrl(""); setPreview(""); setEnvioId(null); setDepu(null); setLogs([]); setEstado(null); setEnviando(false); if (archivoRef.current) archivoRef.current.value = ""; }
+  function nueva() { setNombre(""); setTextoVoz(""); setAudioUrl(""); setPreview(""); setEnvioId(null); setDepu(null); setLogs([]); setEstado(null); setEnviando(false); localStorage.removeItem(CLAVE_BORRADOR); if (archivoRef.current) archivoRef.current.value = ""; }
 
   const puedeEnviar = depu && depu.validos > 0 && !enviando;
   const finalizada = estado && ["finalizada", "error"].includes(estado.estado);

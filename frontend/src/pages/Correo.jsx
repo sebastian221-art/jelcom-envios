@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import SelectorCliente from "../components/SelectorCliente.jsx";
 
+const CLAVE_BORRADOR = "jelcom_borrador_correo";
+
 export default function Correo() {
   const [clienteId, setClienteId] = useState(null);
   const [nombre, setNombre] = useState("");
@@ -17,6 +19,27 @@ export default function Correo() {
   const archivoRef = useRef();
   const ultimoLog = useRef(0);
   const logsBox = useRef();
+
+  // Restaura el borrador guardado (si hay uno) apenas se monta la pantalla.
+  useEffect(() => {
+    try {
+      const g = JSON.parse(localStorage.getItem(CLAVE_BORRADOR) || "null");
+      if (g) {
+        if (g.clienteId != null) setClienteId(g.clienteId);
+        if (g.nombre) setNombre(g.nombre);
+        if (g.asunto) setAsunto(g.asunto);
+        if (g.cuerpo) setCuerpo(g.cuerpo);
+        if (g.imagenUrl) setImagenUrl(g.imagenUrl);
+        if (g.enlace) setEnlace(g.enlace);
+      }
+    } catch {}
+  }, []);
+
+  // Guarda el borrador cada vez que cambia algo, mientras no exista un envío creado.
+  useEffect(() => {
+    if (envioId) return;
+    localStorage.setItem(CLAVE_BORRADOR, JSON.stringify({ clienteId, nombre, asunto, cuerpo, imagenUrl, enlace }));
+  }, [clienteId, nombre, asunto, cuerpo, imagenUrl, enlace, envioId]);
 
   useEffect(() => {
     if (!envioId) return;
@@ -39,6 +62,7 @@ export default function Correo() {
       body: JSON.stringify({ campana_id: clienteId, nombre, canal: "correo", asunto, cuerpo, imagen_url: imagenUrl || null, enlace: enlace || null }),
     }).then(r => r.json());
     setEnvioId(c.id);
+    localStorage.removeItem(CLAVE_BORRADOR);
     const fd = new FormData(); fd.append("archivo", archivoRef.current.files[0]);
     const d = await fetch(`/api/envios/${c.id}/base`, { method: "POST", body: fd }).then(r => r.json());
     setDepu(d); setCargando(false);
@@ -55,7 +79,7 @@ export default function Correo() {
   }
   async function pausar() { await fetch(`/api/envios/${envioId}/pausar`, { method: "POST" }); }
   function descargar() { window.open(`/api/envios/${envioId}/informe`, "_blank"); }
-  function nueva() { setNombre(""); setAsunto(""); setCuerpo(""); setImagenUrl(""); setEnlace(""); setEnvioId(null); setDepu(null); setLogs([]); setEstado(null); setEnviando(false); if (archivoRef.current) archivoRef.current.value = ""; }
+  function nueva() { setNombre(""); setAsunto(""); setCuerpo(""); setImagenUrl(""); setEnlace(""); setEnvioId(null); setDepu(null); setLogs([]); setEstado(null); setEnviando(false); localStorage.removeItem(CLAVE_BORRADOR); if (archivoRef.current) archivoRef.current.value = ""; }
 
   const puedeEnviar = depu && depu.validos > 0 && !enviando;
   const finalizada = estado && ["finalizada", "error"].includes(estado.estado);
