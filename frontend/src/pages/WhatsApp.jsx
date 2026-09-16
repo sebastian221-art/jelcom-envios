@@ -47,11 +47,18 @@ function ModoEnvio() {
   const logsBox = useRef();
 
   // cuando cambia el cliente, autoselecciona su cuenta por defecto
+  // (si no tiene ninguna asignada, selecciona la única disponible o avisa)
   async function onCliente(id) {
     setClienteId(id);
     const camp = await fetch("/api/campanas").then(r => r.json());
     const c = camp.find(x => x.id === id);
-    if (c && c.cuenta_wa_id) setCuentaId(c.cuenta_wa_id);
+    if (c && c.cuenta_wa_id) {
+      setCuentaId(c.cuenta_wa_id);
+    } else if (cuentas.length === 1) {
+      setCuentaId(cuentas[0].id);
+    } else {
+      setCuentaId("");
+    }
   }
 
   useEffect(() => {
@@ -107,7 +114,11 @@ function ModoEnvio() {
           <option value="">— Elige una cuenta —</option>
           {cuentas.map(c => <option key={c.id} value={c.id}>{c.nombre}{c.telefono ? ` (${c.telefono})` : ""}</option>)}
         </select>
-        <div className="hint">Se autoselecciona la del cliente, pero puedes cambiarla para este envío.</div>
+        <div className="hint">
+          {cuentaId
+            ? "Se autoselecciona la del cliente, pero puedes cambiarla para este envío."
+            : "⚠️ Este cliente no tiene una cuenta de WhatsApp asignada por defecto. Elige una arriba antes de continuar."}
+        </div>
         <label>Nombre del envío</label>
         <input type="text" value={nombre} onChange={e => setNombre(e.target.value)} placeholder="Ej. Festipatitas Bucaramanga" disabled={!!envioId} />
         <div style={{ display: "flex", gap: 14 }}>
@@ -244,7 +255,7 @@ function ModoCrearPlantilla() {
 
       <div className="card">
         <h2>Plantillas enviadas</h2>
-        <div className="hint" style={{ marginTop: -6 }}>El estado se actualiza solo. Cuando diga “Aprobada”, úsala en “Plantilla existente”.</div>
+        <div className="hint" style={{ marginTop: -6 }}>El estado se actualiza solo. Cuando diga "Aprobada", úsala en "Plantilla existente".</div>
         {plantillas.length === 0 ? (
           <div className="empty" style={{ padding: 24 }}>Aún no has creado plantillas desde el sistema.</div>
         ) : (
