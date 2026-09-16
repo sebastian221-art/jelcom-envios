@@ -1,9 +1,13 @@
 // frontend/server.js — Sirve el build de Vite (carpeta dist) Y reenvía
 // cualquier petición a /api hacia el backend, usando la red privada de
 // Railway (más rápido y seguro que ir por internet pública).
-const express = require("express");
-const path = require("path");
-const { createProxyMiddleware } = require("http-proxy-middleware");
+import express from "express";
+import path from "path";
+import { fileURLToPath } from "url";
+import { createProxyMiddleware } from "http-proxy-middleware";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 
