@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import SelectorCliente from "../components/SelectorCliente.jsx";
 
 const CLAVE_BORRADOR = "jelcom_borrador_voz";
@@ -28,6 +29,7 @@ function useVoces() {
 // ─────────── ENVIAR ───────────
 function ModoEnvio() {
   const [voces] = useVoces();
+  const navigate = useNavigate();
   const [vozId, setVozId] = useState("");
   const [clienteId, setClienteId] = useState(null);
   const [nombre, setNombre] = useState("");
@@ -47,6 +49,13 @@ function ModoEnvio() {
   const archivoRef = useRef();
   const ultimoLog = useRef(0);
   const logsBox = useRef();
+
+  // ---- Dividir en sub-envíos ----
+  const [dividir, setDividir] = useState(false);
+  const [cantidadPartes, setCantidadPartes] = useState(3);
+  const [subIds, setSubIds] = useState([]);
+  const [subEstados, setSubEstados] = useState({});
+  const [dividiendo, setDividiendo] = useState(false);
 
   // preselecciona la primera voz guardada apenas carguen (si no hay una restaurada del borrador)
   useEffect(() => { if (voces.length && !vozId) setVozId(voces[0].voice_id); }, [voces]);
@@ -74,8 +83,9 @@ function ModoEnvio() {
     localStorage.setItem(CLAVE_BORRADOR, JSON.stringify({ clienteId, nombre, modoAudio, textoVoz, audioUrl, conTecla, teclaDesc, vozId }));
   }, [clienteId, nombre, modoAudio, textoVoz, audioUrl, conTecla, teclaDesc, vozId, envioId]);
 
+  // Logs del envío normal (solo si NO se dividió)
   useEffect(() => {
-    if (!envioId) return;
+    if (!envioId || subIds.length) return;
     const iv = setInterval(async () => {
       const r = await fetch(`/api/envios/${envioId}/logs?desde=${ultimoLog.current}`).then(r => r.json());
       if (r.logs?.length) { ultimoLog.current = r.logs[r.logs.length - 1].id; setLogs(p => [...p, ...r.logs]); }
@@ -83,8 +93,20 @@ function ModoEnvio() {
       if (r.envio && ["finalizada", "error"].includes(r.envio.estado)) setEnviando(false);
     }, 1200);
     return () => clearInterval(iv);
-  }, [envioId]);
+  }, [envioId, subIds]);
   useEffect(() => { if (logsBox.current) logsBox.current.scrollTop = logsBox.current.scrollHeight; }, [logs]);
+
+  // Progreso de los sub-envíos (solo si SÍ se dividió)
+  useEffect(() => {
+    if (!subIds.length) return;
+    const iv = setInterval(async () => {
+      const resultados = await Promise.all(subIds.map(id => fetch(`/api/envios/${id}`).then(r => r.json())));
+      const mapa = {};
+      resultados.forEach(e => { mapa[e.id] = e; });
+      setSubEstados(mapa);
+    }, 2000);
+    return () => clearInterval(iv);
+  }, [subIds]);
 
   async function previsualizarVoz() {
     if (!textoVoz) { alert("Escribe el texto primero"); return; }
@@ -124,6 +146,17 @@ function ModoEnvio() {
     setDepu(d); setCargando(false);
   }
   async function enviar() {
+    if (dividir && cantidadPartes >= 2) {
+      setDividiendo(true);
+      const r = await fetch(`/api/envios/${envioId}/dividir`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cantidad: cantidadPartes }),
+      }).then(r => r.json());
+      setDividiendo(false);
+      if (r.error) { alert(r.error); return; }
+      setSubIds(r.ids); setEnviando(true);
+      return;
+    }
     setEnviando(true); setLogs([]); ultimoLog.current = 0;
     try {
       const r = await fetch(`/api/envios/${envioId}/enviar`, { method: "POST" }).then(r => r.json());
@@ -135,10 +168,21 @@ function ModoEnvio() {
   }
   async function pausar() { await fetch(`/api/envios/${envioId}/pausar`, { method: "POST" }); }
   function descargar() { window.open(`/api/envios/${envioId}/informe`, "_blank"); }
-  function nueva() { setNombre(""); setTextoVoz(""); setAudioUrl(""); setPreview(""); setEnvioId(null); setDepu(null); setLogs([]); setEstado(null); setEnviando(false); localStorage.removeItem(CLAVE_BORRADOR); if (archivoRef.current) archivoRef.current.value = ""; }
+  function descargarConsolidado() { window.open(`/api/envios/${envioId}/informe-consolidado`, "_blank"); }
+  function nueva() {
+    setNombre(""); setTextoVoz(""); setAudioUrl(""); setPreview(""); setEnvioId(null); setDepu(null); setLogs([]); setEstado(null); setEnviando(false);
+    setDividir(false); setSubIds([]); setSubEstados({});
+    localStorage.removeItem(CLAVE_BORRADOR); if (archivoRef.current) archivoRef.current.value = "";
+  }
 
   const puedeEnviar = depu && depu.validos > 0 && !enviando;
   const finalizada = estado && ["finalizada", "error"].includes(estado.estado);
+
+  const subLista = subIds.map(id => subEstados[id]).filter(Boolean);
+  const subTodosFinalizados = subLista.length === subIds.length && subLista.every(e => ["finalizada", "error"].includes(e.estado));
+  const subTotalEnviados = subLista.reduce((a, e) => a + (e.total_enviados || 0), 0);
+  const subTotalErrores = subLista.reduce((a, e) => a + (e.total_errores || 0), 0);
+  const subTotalValidos = subLista.reduce((a, e) => a + (e.total_validos || 0), 0);
 
   return (
     <>
@@ -208,19 +252,80 @@ function ModoEnvio() {
       {depu && (
         <div className="card">
           <h2><span className="num">3</span> Llamadas</h2>
+
+          {!enviando && !subIds.length && (
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input type="checkbox" checked={dividir} onChange={e => setDividir(e.target.checked)} style={{ width: "auto", margin: 0 }} />
+                Dividir en varios sub-envíos (para que termine más rápido)
+              </label>
+              {dividir && (
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8 }}>
+                  <span>¿En cuántas partes?</span>
+                  <input type="number" min={2} max={20} value={cantidadPartes}
+                         onChange={e => setCantidadPartes(Number(e.target.value))}
+                         style={{ width: 70, marginBottom: 0 }} />
+                  <span className="hint" style={{ margin: 0 }}>
+                    ≈ {depu.validos ? Math.ceil(depu.validos / Math.max(1, cantidadPartes)) : 0} llamadas por parte
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="btn-row" style={{ marginBottom: 16 }}>
-            {!finalizada && estado?.estado !== "pausada" && <button className="naranja" onClick={enviar} disabled={!puedeEnviar}>{enviando ? "Llamando…" : "▶ Iniciar llamadas"}</button>}
-            {enviando && estado?.estado === "en_curso" && <button className="sec" onClick={pausar}>⏸ Pausar</button>}
-            {estado?.estado === "pausada" && <button className="naranja" onClick={enviar}>▶ Reanudar</button>}
-            {finalizada && <button className="verde" onClick={descargar}>⬇ Descargar informe Excel</button>}
-            {!!envioId && <button className="sec" onClick={nueva}>+ Nuevo envío (el actual sigue en curso)</button>}
+            {!finalizada && !subIds.length && estado?.estado !== "pausada" &&
+              <button className="naranja" onClick={enviar} disabled={!puedeEnviar || dividiendo}>
+                {dividiendo ? "Dividiendo…" : enviando ? "Llamando…" : dividir ? "▶ Dividir y llamar" : "▶ Iniciar llamadas"}
+              </button>}
+            {enviando && !subIds.length && estado?.estado === "en_curso" && <button className="sec" onClick={pausar}>⏸ Pausar</button>}
+            {estado?.estado === "pausada" && !subIds.length && <button className="naranja" onClick={enviar}>▶ Reanudar</button>}
+            {finalizada && !subIds.length && <button className="verde" onClick={descargar}>⬇ Descargar informe Excel</button>}
+            {subIds.length > 0 && <button className="verde" onClick={descargarConsolidado}>⬇ Descargar informe consolidado</button>}
+            {(!!envioId) && <button className="sec" onClick={nueva}>+ Nuevo envío (el actual sigue en curso)</button>}
           </div>
-          {estado && <div className="hint">Estado: <strong>{estado.estado}</strong> · Llamadas iniciadas: {estado.total_enviados || 0} · Errores: {estado.total_errores || 0} · Total: {estado.total_validos}</div>}
-          <div className="logs" ref={logsBox}>
-            {logs.length === 0 && <div className="info">Los logs de las llamadas aparecerán aquí…</div>}
-            {logs.map(l => <div key={l.id} className={`linea ${l.nivel}`}><span className="ts">{l.ts?.slice(11)}</span>{l.mensaje}</div>)}
-          </div>
-          <div className="hint" style={{ marginTop: 10 }}>Nota: "contestada" y la tecla marcada llegan unos segundos después de cada llamada, cuando Twilio confirma el resultado.</div>
+
+          {!subIds.length && estado && (
+            <div className="hint">Estado: <strong>{estado.estado}</strong> · Llamadas iniciadas: {estado.total_enviados || 0} · Errores: {estado.total_errores || 0} · Total: {estado.total_validos}</div>
+          )}
+          {!subIds.length && (
+            <div className="logs" ref={logsBox}>
+              {logs.length === 0 && <div className="info">Los logs de las llamadas aparecerán aquí…</div>}
+              {logs.map(l => <div key={l.id} className={`linea ${l.nivel}`}><span className="ts">{l.ts?.slice(11)}</span>{l.mensaje}</div>)}
+            </div>
+          )}
+          {!subIds.length && (
+            <div className="hint" style={{ marginTop: 10 }}>Nota: "contestada" y la tecla marcada llegan unos segundos después de cada llamada, cuando Twilio confirma el resultado.</div>
+          )}
+
+          {subIds.length > 0 && (
+            <div>
+              <div className="hint">
+                {subTodosFinalizados ? "🏁 Todos los sub-envíos terminaron." : "🚀 Sub-envíos corriendo en paralelo…"} ·
+                {" "}Llamadas iniciadas: {subTotalEnviados} · Errores: {subTotalErrores} · Total: {subTotalValidos}
+              </div>
+              <div className="tabla-wrap" style={{ marginTop: 10 }}>
+                <table>
+                  <thead><tr><th>Sub-envío</th><th>Estado</th><th>Llamadas</th><th>Errores</th><th>Total</th><th></th></tr></thead>
+                  <tbody>
+                    {subIds.map((id, i) => {
+                      const e = subEstados[id];
+                      return (
+                        <tr key={id}>
+                          <td>Parte {i + 1}/{subIds.length}</td>
+                          <td>{e ? e.estado : "cargando…"}</td>
+                          <td>{e?.total_enviados ?? "—"}</td>
+                          <td>{e?.total_errores ?? "—"}</td>
+                          <td>{e?.total_validos ?? "—"}</td>
+                          <td><button className="sec" onClick={() => navigate(`/envios/${id}`)}>Ver</button></td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </>

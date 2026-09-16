@@ -5,6 +5,7 @@ const { db } = require("../db");
 const { depurarTelefonos, depurarCorreos, analizarSMS } = require("../services/depurar");
 const motor = require("../services/motor");
 const informe = require("../services/informe");
+const informeConsolidado = require("../services/informeConsolidado");
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20*1024*1024 } });
@@ -75,19 +76,26 @@ router.post("/:id/base", upload.single("archivo"), (req, res) => {
   res.json({ total_base: totalBase, validos: validos.length, duplicados: dup, invalidos: inv });
 });
 
+// Genera el audio de ElevenLabs si hace falta (bot de voz, modo 'texto'), una sola vez.
+async function asegurarAudioVoz(e) {
+  if (e.canal === "voz" && e.modo_audio === "texto" && !e.audio_url) {
+    const eleven = require("../services/proveedores/elevenlabs");
+    const r = await eleven.generarAudio(e.texto_voz || e.cuerpo, e.voz_id);
+    if (!r.ok) throw new Error("No se pudo generar el audio: " + r.error);
+    db.prepare("UPDATE envios SET audio_url=? WHERE id=?").run(r.archivo, e.id);
+    e.audio_url = r.archivo;
+  }
+  return e;
+}
+
 router.post("/:id/enviar", async (req, res) => {
   const e = db.prepare("SELECT * FROM envios WHERE id=?").get(req.params.id);
   if (!e) return res.status(404).json({ error: "No existe" });
   if (e.total_validos === 0) return res.status(400).json({ error: "Sube una base primero" });
 
-  // Bot de voz modo 'texto': generar el audio con ElevenLabs antes de llamar
-  if (e.canal === "voz" && e.modo_audio === "texto" && !e.audio_url) {
-    const eleven = require("../services/proveedores/elevenlabs");
-    const r = await eleven.generarAudio(e.texto_voz || e.cuerpo, e.voz_id);
-    if (!r.ok) return res.status(400).json({ error: "No se pudo generar el audio: " + r.error });
-    db.prepare("UPDATE envios SET audio_url=? WHERE id=?").run(r.archivo, e.id);
-    e.audio_url = r.archivo;
-  }
+  try { await asegurarAudioVoz(e); }
+  catch (err) { return res.status(400).json({ error: err.message }); }
+
   motor.procesar(e.id).catch(err => {
     db.prepare("INSERT INTO logs (envio_id, nivel, mensaje) VALUES (?,?,?)").run(e.id, "error", "Error fatal: "+err.message);
     db.prepare("UPDATE envios SET estado='error' WHERE id=?").run(e.id);
@@ -110,6 +118,70 @@ router.get("/:id/logs", (req, res) => {
 router.get("/:id/informe", async (req, res) => {
   try {
     const { buffer, nombre } = await informe.generarEnvio(req.params.id);
+    res.setHeader("Content-Disposition", `attachment; filename="${nombre}"`);
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.send(Buffer.from(buffer));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Divide un envío en N sub-envíos y los lanza todos en paralelo.
+// Body: { cantidad } — en cuántas partes dividirlo.
+router.post("/:id/dividir", async (req, res) => {
+  const original = db.prepare("SELECT * FROM envios WHERE id=?").get(req.params.id);
+  if (!original) return res.status(404).json({ error: "No existe" });
+  const cantidad = Math.max(2, Number(req.body.cantidad) || 2);
+
+  // Si es bot de voz con texto (ElevenLabs), genera el audio UNA vez antes de
+  // repartir — así todos los sub-envíos comparten el mismo audio ya generado.
+  try { await asegurarAudioVoz(original); }
+  catch (err) { return res.status(400).json({ error: err.message }); }
+
+  motor.pausar(original.id);
+  await new Promise(r => setTimeout(r, 1500)); // deja terminar el mensaje a medias, si había uno
+
+  const pendientes = db.prepare("SELECT * FROM contactos WHERE envio_id=? AND estado='pendiente'").all(original.id);
+  if (pendientes.length === 0) return res.status(400).json({ error: "No hay contactos pendientes para dividir" });
+
+  const tamanoLote = Math.ceil(pendientes.length / cantidad);
+  const lotes = [];
+  for (let i = 0; i < pendientes.length; i += tamanoLote) lotes.push(pendientes.slice(i, i + tamanoLote));
+
+  const insertarEnvio = db.prepare(`
+    INSERT INTO envios (campana_id, cuenta_wa_id, cuenta_sms_id, nombre, canal, estado, padre_id,
+      cuerpo, asunto, imagen_url, enlace, plantilla, idioma, modo_audio, audio_url,
+      texto_voz, voz_id, tecla_captura, total_base, total_validos, creado_por)
+    VALUES (?,?,?,?,?, 'lista', ?, ?,?,?,?,?,?,?,?,?,?,?, ?,?, ?)
+  `);
+  const insertarContacto = db.prepare("INSERT INTO contactos (envio_id, destino) VALUES (?,?)");
+  const nuevosIds = [];
+
+  db.transaction(() => {
+    lotes.forEach((lote, i) => {
+      const info = insertarEnvio.run(
+        original.campana_id, original.cuenta_wa_id, original.cuenta_sms_id,
+        `${original.nombre} (parte ${i + 1}/${lotes.length})`, original.canal, original.id,
+        original.cuerpo, original.asunto, original.imagen_url, original.enlace,
+        original.plantilla, original.idioma, original.modo_audio, original.audio_url,
+        original.texto_voz, original.voz_id, original.tecla_captura,
+        lote.length, lote.length, original.creado_por
+      );
+      const nuevoId = info.lastInsertRowid;
+      for (const c of lote) insertarContacto.run(nuevoId, c.destino);
+      nuevosIds.push(nuevoId);
+    });
+    db.prepare("DELETE FROM contactos WHERE envio_id=? AND estado='pendiente'").run(original.id);
+  })();
+
+  nuevosIds.forEach(id => motor.procesar(id).catch(() => {}));
+
+  res.json({ ids: nuevosIds });
+});
+
+// Informe consolidado: el envío original + todos sus sub-envíos (padre_id),
+// en UN solo Excel, sumando enviados/errores sin duplicar la base.
+router.get("/:id/informe-consolidado", async (req, res) => {
+  try {
+    const { buffer, nombre } = await informeConsolidado.generar(req.params.id);
     res.setHeader("Content-Disposition", `attachment; filename="${nombre}"`);
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.send(Buffer.from(buffer));

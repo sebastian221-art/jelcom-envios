@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS envios (
   campana_id    INTEGER NOT NULL DEFAULT 1 REFERENCES campanas(id),
   cuenta_wa_id  INTEGER REFERENCES cuentas_whatsapp(id),
   cuenta_sms_id INTEGER REFERENCES cuentas_sms(id),
+  padre_id      INTEGER REFERENCES envios(id),  -- si este envío nació de dividir otro, apunta al original
   nombre        TEXT NOT NULL,
   canal         TEXT NOT NULL CHECK (canal IN ('sms','whatsapp','correo','voz')),
   estado        TEXT NOT NULL DEFAULT 'borrador'
@@ -57,6 +58,7 @@ CREATE TABLE IF NOT EXISTS envios (
   enviado_en    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_envios_campana ON envios(campana_id);
+CREATE INDEX IF NOT EXISTS idx_envios_padre ON envios(padre_id);
 
 CREATE TABLE IF NOT EXISTS contactos (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
