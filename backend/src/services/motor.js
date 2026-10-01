@@ -82,18 +82,28 @@ async function procesar(envioId) {
     const c = pendientes[i];
     let enviado = false, ultimoError = "";
     for (let intento = 1; intento <= 3 && !enviado; intento++) {
-      const r = await enviarSegunCanal(envio.canal, envio, c);
+      // Si el proveedor tira una excepción (no solo { ok:false }), la tratamos
+      // igual que un error de envío para no cortar el resto de la campaña.
+      let r;
+      try {
+        r = await enviarSegunCanal(envio.canal, envio, c);
+      } catch (e) {
+        r = { ok: false, error: e.message || String(e) };
+      }
       if (r.ok) { updOk.run(r.comprobante || "", intento, c.id); incEnv.run(envioId); ok++; enviado = true; }
       else {
         ultimoError = r.error || "error desconocido";
         const esRed = /timeout|ECONN|network|socket|ETIMEDOUT/i.test(ultimoError);
-        if (esRed && intento < 3) { log(envioId, `⚠️ ${c.destino}: fallo de red (intento ${intento}/3), reintentando...`, "warn"); await delay(3000); }
+        if (esRed && intento < 3) {
+          log(envioId, `⚠️ ${c.destino}: fallo de red (intento ${intento}/3), reintentando...`, "warn");
+          try { await delay(3000); } catch (e) { log(envioId, `Error inesperado en la espera de reintento: ${e.message}`, "error"); }
+        }
         else break;
       }
     }
     if (!enviado) { updErr.run(ultimoError, 3, c.id); incErr.run(envioId); err++; if (err <= 5) log(envioId, `❌ ${c.destino}: ${ultimoError}`, "error"); }
     if (i % 50 === 0 || i === pendientes.length - 1) log(envioId, `Progreso: ${i + 1}/${pendientes.length} · enviados ${ok} · errores ${err}`);
-    await delay(300);
+    try { await delay(300); } catch (e) { log(envioId, `Error inesperado en la pausa entre envíos: ${e.message}`, "error"); }
   }
 
   db.prepare("UPDATE envios SET estado='finalizada', enviado_en=datetime('now','localtime') WHERE id=?").run(envioId);

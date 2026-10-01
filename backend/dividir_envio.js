@@ -52,9 +52,17 @@ async function main() {
   console.log(`Envío original: "${original.nombre}" (canal: ${original.canal}, estado: ${original.estado})`);
 
   console.log('⏸️  Pausando el envío original (si estaba corriendo)...');
-  await post(`/api/envios/${ID_ORIGINAL}/pausar`);
+  try {
+    await post(`/api/envios/${ID_ORIGINAL}/pausar`);
+  } catch (e) {
+    console.log(`   ⚠️  No se pudo pausar (¿el backend no está corriendo?): ${e.message}. Se continúa igual.`);
+  }
   console.log('   Esperando 5s por si tenía un mensaje a medias...');
-  await espera(5000);
+  try {
+    await espera(5000);
+  } catch (e) {
+    console.log(`   ⚠️  Error inesperado durante la espera: ${e.message}`);
+  }
 
   const pendientes = db.prepare("SELECT destino FROM contactos WHERE envio_id=? AND estado='pendiente'").all(ID_ORIGINAL);
   console.log(`📋 Contactos pendientes por repartir: ${pendientes.length}`);
@@ -105,7 +113,15 @@ async function main() {
   console.log(`🧹 Limpiados ${limpiados.changes} contactos "pendiente" del envío original (ya viven en los mini-envíos, sin duplicar).`);
 
   console.log('🚀 Lanzando todos los mini-envíos en paralelo...');
-  await Promise.all(nuevosIds.map(id => post(`/api/envios/${id}/enviar`)));
+  try {
+    // allSettled en vez de Promise.all: si uno falla en arrancar no queremos
+    // perder de vista el resultado de los demás (ya quedaron creados en la BD).
+    const resultados = await Promise.allSettled(nuevosIds.map(id => post(`/api/envios/${id}/enviar`)));
+    const fallidos = resultados.filter(r => r.status === 'rejected').length;
+    if (fallidos) console.log(`   ⚠️  ${fallidos} mini-envío(s) no pudieron lanzarse solos; iniciálos manualmente desde la plataforma.`);
+  } catch (e) {
+    console.log(`   ⚠️  Error inesperado al lanzar los mini-envíos: ${e.message}. Ya quedaron creados, iniciálos manualmente desde la plataforma.`);
+  }
   console.log('🎉 Listo. Todos los mini-envíos están corriendo en paralelo.');
   console.log('   Revisa el panel "Envíos activos" en la plataforma para verlos todos.');
   console.log('   Cuando terminen, usa "Informe consolidado" en Historial (o informe_combinado.js) para el TOTAL sumado.');
