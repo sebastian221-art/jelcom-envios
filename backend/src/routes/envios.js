@@ -50,6 +50,26 @@ router.get("/:id", (req, res) => {
   res.json(e);
 });
 
+// Borra un envío. Solo se permite si todavía no se procesó nada: estado
+// 'borrador' o 'lista' (nunca en_curso/pausada/finalizada/error) y ningún
+// contacto fue efectivamente enviado (evita perder el historial de un envío real).
+router.delete("/:id", (req, res) => {
+  const e = db.prepare("SELECT * FROM envios WHERE id=?").get(req.params.id);
+  if (!e) return res.status(404).json({ error: "No existe" });
+
+  if (!["borrador", "lista"].includes(e.estado)) {
+    return res.status(400).json({ error: "Solo se puede borrar un envío en estado 'borrador' o 'lista'" });
+  }
+
+  const { total } = db.prepare("SELECT COUNT(*) AS total FROM contactos WHERE envio_id=? AND estado<>'pendiente'").get(e.id);
+  if (total > 0) {
+    return res.status(400).json({ error: "No se puede borrar: el envío ya tiene contactos enviados" });
+  }
+
+  db.prepare("DELETE FROM envios WHERE id=?").run(e.id); // contactos/descartados/logs caen por ON DELETE CASCADE
+  res.json({ ok: true });
+});
+
 // Subir base y depurar
 router.post("/:id/base", upload.single("archivo"), (req, res) => {
   const e = db.prepare("SELECT * FROM envios WHERE id=?").get(req.params.id);
