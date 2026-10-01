@@ -43,7 +43,13 @@ function req(metodo, ruta, body) {
 
 // Pide una lista (GET). Si la respuesta no es un array, avisa y muestra por qué.
 async function pedirLista(ruta, etiqueta) {
-  const r = await req('GET', ruta);
+  let r;
+  try {
+    r = await req('GET', ruta);
+  } catch (e) {
+    console.log(`   ⚠️  ${etiqueta}: no se pudo conectar a Railway (${e.message})`);
+    return [];
+  }
   if (r.status !== 200) {
     console.log(`   ⚠️  ${etiqueta}: Railway respondió status ${r.status}. Cuerpo: ${r.raw.slice(0, 300)}`);
     return [];
@@ -57,7 +63,13 @@ async function pedirLista(ruta, etiqueta) {
 
 async function migrarWhatsApp() {
   const locales = db.prepare("SELECT * FROM cuentas_whatsapp WHERE activa=1").all();
-  const remotas = await pedirLista('/api/cuentas', 'GET /api/cuentas');
+  let remotas;
+  try {
+    remotas = await pedirLista('/api/cuentas', 'GET /api/cuentas');
+  } catch (e) {
+    console.log(`   ⚠️  No se pudo consultar cuentas WhatsApp remotas: ${e.message}`);
+    remotas = [];
+  }
   const nombresRemotos = new Set(remotas.map(c => c.nombre));
 
   console.log(`\n📱 Cuentas WhatsApp locales: ${locales.length} | ya en Railway: ${remotas.length}`);
@@ -66,21 +78,31 @@ async function migrarWhatsApp() {
       console.log(`   ⏭️  "${c.nombre}" ya existe en Railway, se omite`);
       continue;
     }
-    const r = await req('POST', '/api/cuentas', {
-      nombre: c.nombre, telefono: c.telefono,
-      wa_token: c.wa_token, wa_phone_id: c.wa_phone_id, wa_business_id: c.wa_business_id,
-    });
-    if (r.status >= 200 && r.status < 300 && r.json?.id) {
-      console.log(`   ✅ Creada "${c.nombre}" en Railway (id ${r.json.id})`);
-    } else {
-      console.log(`   ❌ Falló crear "${c.nombre}": status ${r.status} · ${r.raw.slice(0, 300)}`);
+    try {
+      const r = await req('POST', '/api/cuentas', {
+        nombre: c.nombre, telefono: c.telefono,
+        wa_token: c.wa_token, wa_phone_id: c.wa_phone_id, wa_business_id: c.wa_business_id,
+      });
+      if (r.status >= 200 && r.status < 300 && r.json?.id) {
+        console.log(`   ✅ Creada "${c.nombre}" en Railway (id ${r.json.id})`);
+      } else {
+        console.log(`   ❌ Falló crear "${c.nombre}": status ${r.status} · ${r.raw.slice(0, 300)}`);
+      }
+    } catch (e) {
+      console.log(`   ❌ Falló crear "${c.nombre}": ${e.message}`);
     }
   }
 }
 
 async function migrarSms() {
   const locales = db.prepare("SELECT * FROM cuentas_sms WHERE activa=1").all();
-  const remotas = await pedirLista('/api/cuentas-sms', 'GET /api/cuentas-sms');
+  let remotas;
+  try {
+    remotas = await pedirLista('/api/cuentas-sms', 'GET /api/cuentas-sms');
+  } catch (e) {
+    console.log(`   ⚠️  No se pudo consultar cuentas SMS remotas: ${e.message}`);
+    remotas = [];
+  }
   const nombresRemotos = new Set(remotas.map(c => c.nombre));
 
   console.log(`\n💬 Cuentas SMS locales: ${locales.length} | ya en Railway: ${remotas.length}`);
@@ -89,24 +111,36 @@ async function migrarSms() {
       console.log(`   ⏭️  "${c.nombre}" ya existe en Railway, se omite`);
       continue;
     }
-    const r = await req('POST', '/api/cuentas-sms', {
-      nombre: c.nombre, proveedor: c.proveedor, remitente: c.remitente,
-      hablame_account: c.hablame_account, hablame_apikey: c.hablame_apikey, hablame_url: c.hablame_url,
-      brevo_apikey: c.brevo_apikey,
-      labsmobile_usuario: c.labsmobile_usuario, labsmobile_token: c.labsmobile_token,
-    });
-    if (r.status >= 200 && r.status < 300 && r.json?.id) {
-      console.log(`   ✅ Creada "${c.nombre}" en Railway (id ${r.json.id})`);
-    } else {
-      console.log(`   ❌ Falló crear "${c.nombre}": status ${r.status} · ${r.raw.slice(0, 300)}`);
+    try {
+      const r = await req('POST', '/api/cuentas-sms', {
+        nombre: c.nombre, proveedor: c.proveedor, remitente: c.remitente,
+        hablame_account: c.hablame_account, hablame_apikey: c.hablame_apikey, hablame_url: c.hablame_url,
+        brevo_apikey: c.brevo_apikey,
+        labsmobile_usuario: c.labsmobile_usuario, labsmobile_token: c.labsmobile_token,
+      });
+      if (r.status >= 200 && r.status < 300 && r.json?.id) {
+        console.log(`   ✅ Creada "${c.nombre}" en Railway (id ${r.json.id})`);
+      } else {
+        console.log(`   ❌ Falló crear "${c.nombre}": status ${r.status} · ${r.raw.slice(0, 300)}`);
+      }
+    } catch (e) {
+      console.log(`   ❌ Falló crear "${c.nombre}": ${e.message}`);
     }
   }
 }
 
 async function main() {
   console.log(`Conectando a: ${RAILWAY_URL}`);
-  await migrarWhatsApp();
-  await migrarSms();
+  try {
+    await migrarWhatsApp();
+  } catch (e) {
+    console.log(`   ❌ Falló la migración de WhatsApp: ${e.message}`);
+  }
+  try {
+    await migrarSms();
+  } catch (e) {
+    console.log(`   ❌ Falló la migración de SMS: ${e.message}`);
+  }
   console.log('\n🎉 Migración de cuentas terminada.');
 }
 main().catch(e => { console.error('Error:', e.message); process.exit(1); });

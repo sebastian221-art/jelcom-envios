@@ -1,3 +1,4 @@
+require("./errorHandlers"); // red de seguridad del proceso — se carga primero que todo
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
