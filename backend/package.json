@@ -5,7 +5,7 @@
   "type": "commonjs",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js",
+    "start": "node restaurar_cuentas.js && node src/server.js",
     "dev": "node --watch src/server.js",
     "init-db": "node src/db/init.js",
     "test": "node --test"
