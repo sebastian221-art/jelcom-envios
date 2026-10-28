@@ -81,3 +81,9 @@ coverage/
 .eslintcache
 *.tsbuildinfo
 backend/cuentas_export.json
+backend/cuentas_respaldo.json
+backend/data/
+*.db
+*.db-shm
+*.db-wal
+.env
