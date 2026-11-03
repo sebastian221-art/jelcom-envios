@@ -76,7 +76,8 @@ export default function Correo() {
   }, [subIds]);
 
   async function crearYSubir() {
-    if (!nombre || !asunto || !cuerpo) { alert("Pon nombre del envío, asunto y cuerpo"); return; }
+    if (!nombre || !asunto) { alert("Pon nombre del envío y asunto"); return; }
+    if (!cuerpo.trim() && !imagenUrl.trim()) { alert("Pon el cuerpo del mensaje o la URL de una imagen (o ambos)"); return; }
     if (!archivoRef.current.files[0]) { alert("Selecciona la base de correos"); return; }
     setCargando(true);
     const c = await fetch("/api/envios", {
@@ -140,7 +141,7 @@ export default function Correo() {
         <input type="text" value={nombre} onChange={e => setNombre(e.target.value)} placeholder="Ej. Mailing Turismo Guajira" disabled={!!envioId} />
         <label>Asunto del correo</label>
         <input type="text" value={asunto} onChange={e => setAsunto(e.target.value)} placeholder="Ej. ¡Vive la magia del mar Caribe con Cajasan!" disabled={!!envioId} />
-        <label>Cuerpo del mensaje</label>
+        <label>Cuerpo del mensaje (opcional si el correo es solo una imagen)</label>
         <textarea value={cuerpo} onChange={e => setCuerpo(e.target.value)} placeholder="Escribe el texto del correo. Separa párrafos con una línea en blanco." style={{ minHeight: 160 }} disabled={!!envioId} />
         <div style={{ display: "flex", gap: 14 }}>
           <div style={{ flex: 1 }}>
