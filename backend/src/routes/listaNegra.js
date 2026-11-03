@@ -40,23 +40,36 @@ router.post("/", (req, res) => {
   res.json({ id: info.lastInsertRowid, valor: n.valor, tipo: n.tipo });
 });
 
-// Importar muchos desde Excel/CSV: toma cualquier celda que sea celular o correo.
+// Importar muchos desde Excel/CSV.
+// Toma cualquier celda que sea celular o correo. Si la fila 1 tiene encabezados
+// "Nombre" y/o "Documento"/"Cédula"/"CC", los guarda junto a cada contacto de esa fila.
+const sinTildes = (t) => String(t).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
 router.post("/importar", upload.single("archivo"), (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Falta el archivo" });
-  const motivo = req.body.motivo || "Importado desde archivo";
+  const motivoGeneral = req.body.motivo || "Importado desde archivo";
   const wb = XLSX.read(req.file.buffer, { type: "buffer" });
-  const ins = db.prepare("INSERT OR IGNORE INTO lista_negra (valor, tipo, motivo) VALUES (?,?,?)");
+  const ins = db.prepare("INSERT OR IGNORE INTO lista_negra (valor, tipo, nombre, documento, motivo) VALUES (?,?,?,?,?)");
   let agregados = 0, repetidos = 0, ignorados = 0;
   db.transaction(() => {
     for (const nombreHoja of wb.SheetNames) {
       const filas = XLSX.utils.sheet_to_json(wb.Sheets[nombreHoja], { header: 1, defval: "" });
-      for (const fila of filas) for (const celda of fila) {
-        if (String(celda).trim() === "") continue;
-        const n = listaNegra.normalizar(celda);
-        if (!n) { ignorados++; continue; }
-        const r = ins.run(n.valor, n.tipo, motivo);
-        if (r.changes) agregados++; else repetidos++;
-      }
+      const enc = (filas[0] || []).map(sinTildes);
+      const col = (...claves) => enc.findIndex(h => claves.some(k => h === k || h.startsWith(k)));
+      const iNombre = col("nombre"), iDoc = col("documento", "cedula", "cc", "identificacion"), iMotivo = col("motivo");
+      const conEncabezado = iNombre >= 0 || iDoc >= 0;
+      filas.forEach((fila, f) => {
+        if (conEncabezado && f === 0) return;
+        const nombre = iNombre >= 0 ? String(fila[iNombre] || "").trim() || null : null;
+        const documento = iDoc >= 0 ? String(fila[iDoc] || "").trim() || null : null;
+        const motivo = (iMotivo >= 0 && String(fila[iMotivo] || "").trim()) || motivoGeneral;
+        fila.forEach((celda, c) => {
+          if (String(celda).trim() === "" || c === iNombre || c === iDoc || c === iMotivo) return;
+          const n = listaNegra.normalizar(celda);
+          if (!n) { ignorados++; return; }
+          const r = ins.run(n.valor, n.tipo, nombre, documento, motivo);
+          if (r.changes) agregados++; else repetidos++;
+        });
+      });
     }
   })();
   res.json({ agregados, repetidos, ignorados });

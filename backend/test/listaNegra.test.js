@@ -67,6 +67,11 @@ test('normaliza el mismo celular escrito de varias formas', () => {
   }
   assert.deepEqual(listaNegra.normalizar(' Juan@Gmail.COM '), { valor: 'juan@gmail.com', tipo: 'correo' });
   assert.equal(listaNegra.normalizar('12345'), null);
+  // Gmail: puntos y +etiquetas no cambian el buzón
+  assert.equal(listaNegra.normalizar('alejandro.sampayo@gmail.com').valor, 'alejandrosampayo@gmail.com');
+  assert.equal(listaNegra.normalizar('Alejandro.Sampayo+cajasan@googlemail.com').valor, 'alejandrosampayo@gmail.com');
+  // Otros dominios sí respetan los puntos
+  assert.equal(listaNegra.normalizar('juan.perez@hotmail.com').valor, 'juan.perez@hotmail.com');
 });
 
 test('agregar a la lista negra y no permitir repetidos', async () => {
@@ -148,5 +153,6 @@ test('importar lista negra desde Excel (celulares y correos, ignora lo demás)',
   const r = await (await fetch(url('/api/lista-negra/importar'), { method: 'POST', body: fd })).json();
   assert.equal(r.agregados, 2);
   assert.equal(r.repetidos, 1);
-  assert.ok(r.ignorados >= 4); // encabezados y nombres
+  const ana = db.prepare("SELECT * FROM lista_negra WHERE valor='3206666666'").get();
+  assert.equal(ana.nombre, 'Ana', 'debe guardar el nombre de la columna Nombre');
 });

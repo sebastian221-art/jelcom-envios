@@ -12,8 +12,17 @@ function normalizar(entrada) {
   const txt = String(entrada == null ? "" : entrada).trim();
   if (!txt) return null;
   if (txt.includes("@")) {
-    const correo = txt.toLowerCase();
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo) ? { valor: correo, tipo: "correo" } : null;
+    let correo = txt.toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) return null;
+    // Gmail ignora los puntos y lo que va después de "+": juan.perez+x@gmail.com
+    // y juanperez@gmail.com son el MISMO buzón, así que se bloquean como uno solo.
+    let [usuario, dominio] = correo.split("@");
+    if (dominio === "gmail.com" || dominio === "googlemail.com") {
+      usuario = usuario.split("+")[0].replace(/\./g, "");
+      dominio = "gmail.com";
+      correo = `${usuario}@${dominio}`;
+    }
+    return { valor: correo, tipo: "correo" };
   }
   let d = txt.replace(/\D/g, "");
   if (d.length === 12 && d.startsWith("57")) d = d.slice(2);
