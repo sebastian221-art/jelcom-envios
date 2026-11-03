@@ -4,6 +4,7 @@ const { db } = require("../db");
 const hablame = require("../services/proveedores/hablame");
 const meta = require("../services/proveedores/meta");
 const brevo = require("../services/proveedores/brevo");
+const mailgun = require("../services/proveedores/mailgun");
 const twilio = require("../services/proveedores/twilio");
 const eleven = require("../services/proveedores/elevenlabs");
 
@@ -20,7 +21,13 @@ router.post("/:proveedor/probar", async (req, res) => {
   let resultado;
   if (prov === "hablame") resultado = await hablame.probar();
   else if (prov === "meta") resultado = await meta.probar();
-  else if (prov === "brevo") resultado = await brevo.probar();
+  else if (prov === "brevo") {
+    // La tarjeta de Correo prueba el proveedor que esté activo (CORREO_PROVEEDOR)
+    if ((process.env.CORREO_PROVEEDOR || "").toLowerCase() === "mailgun") {
+      resultado = await mailgun.probar();
+      resultado.detalle = "Mailgun · " + (resultado.detalle || "");
+    } else resultado = await brevo.probar();
+  }
   else if (prov === "twilio") resultado = await twilio.probar();
   else if (prov === "elevenlabs") resultado = await eleven.probar();
   else resultado = { estado: "sin_probar", detalle: "Proveedor aún no implementado en Fase 1" };

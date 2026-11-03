@@ -5,6 +5,7 @@
 // ─────────────────────────────────────────────────────────────
 const axios = require("axios");
 const API = "https://api.brevo.com/v3";
+const { construirHtml, encabezadosBaja } = require("../correoHtml");
 
 function config() {
   return {
@@ -16,28 +17,6 @@ function config() {
 function estaConfigurado() { return Boolean(config().apiKey); }
 function headers() {
   return { "api-key": config().apiKey, "Content-Type": "application/json", accept: "application/json" };
-}
-
-// Construye el HTML del correo: cuerpo + imagen opcional (enlazada) + enlace.
-function construirHtml({ cuerpo, imagenUrl, enlace }) {
-  const parrafos = String(cuerpo || "")
-    .split(/\n\n+/)
-    .map(p => `<p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#222;">${p.replace(/\n/g, "<br>")}</p>`)
-    .join("");
-
-  let imagenHtml = "";
-  if (imagenUrl) {
-    const img = `<img src="${imagenUrl}" alt="" style="max-width:100%;height:auto;border-radius:8px;" />`;
-    imagenHtml = enlace
-      ? `<div style="margin:20px 0;"><a href="${enlace}" target="_blank">${img}</a></div>`
-      : `<div style="margin:20px 0;">${img}</div>`;
-  }
-
-  return `<!doctype html><html><body style="margin:0;padding:0;background:#f4f4f4;">
-  <div style="max-width:600px;margin:0 auto;background:#fff;padding:28px;font-family:Arial,sans-serif;">
-    ${parrafos}
-    ${imagenHtml}
-  </div></body></html>`;
 }
 
 // Envía UN correo. Devuelve { ok, comprobante, error }
@@ -52,7 +31,8 @@ async function enviarUno(email, { asunto, cuerpo, imagenUrl, enlace }) {
         sender: { name: c.remitenteNombre, email: c.remitenteEmail },
         to: [{ email }],
         subject: asunto,
-        htmlContent: construirHtml({ cuerpo, imagenUrl, enlace }),
+        htmlContent: construirHtml({ cuerpo, imagenUrl, enlace, email }),
+        headers: encabezadosBaja(email),
       },
       { headers: headers(), timeout: 30000 }
     );

@@ -24,6 +24,7 @@ app.use("/api/voces", require("./routes/voces"));
 app.use("/api/callcenter", require("./routes/callcenter"));
 app.use("/api/apikeys", require("./routes/apikeys"));      // administrar API keys de sistemas externos
 app.use("/api/lista-negra", require("./routes/listaNegra")); // contactos que no deben recibir mensajes
+app.use("/api/baja", require("./routes/baja"));               // enlace "darse de baja" de los correos (público)
 
 // ── API EXTERNA — para que otros sistemas (Satella, PSI, hospital, etc.)
 // creen envíos, los dividan, consulten estado y descarguen informes.

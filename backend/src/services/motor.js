@@ -9,6 +9,7 @@ const brevoSms = require("./proveedores/brevo_sms");
 const labsmobile = require("./proveedores/labsmobile");
 const meta = require("./proveedores/meta");
 const brevo = require("./proveedores/brevo");
+const mailgun = require("./proveedores/mailgun");
 const twilio = require("./proveedores/twilio");
 const listaNegra = require("./listaNegra");
 
@@ -41,7 +42,9 @@ async function enviarSegunCanal(canal, envio, contacto) {
     });
   }
   if (canal === "correo") {
-    return brevo.enviarUno(contacto.destino, {
+    // Proveedor de correo: CORREO_PROVEEDOR=mailgun en Railway para usar Mailgun.
+    const proveedorCorreo = (process.env.CORREO_PROVEEDOR || "brevo").toLowerCase() === "mailgun" ? mailgun : brevo;
+    return proveedorCorreo.enviarUno(contacto.destino, {
       asunto: envio.asunto,
       cuerpo: envio.cuerpo,
       imagenUrl: envio.imagen_url,
