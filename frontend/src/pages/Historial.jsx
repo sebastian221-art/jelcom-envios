@@ -79,7 +79,10 @@ export default function Historial() {
               {envios.map(e => (
                 <tr key={e.id}>
                   <td>{e.id}</td>
-                  <td style={{ fontWeight: 600 }}>{e.nombre}</td>
+                  <td style={{ fontWeight: 600 }}>
+                    {e.nombre}
+                    {e.dividido && <div style={{ fontSize: 11, fontWeight: 400, opacity: .65 }}>Enviado en {e.num_partes} partes en paralelo · un solo informe</div>}
+                  </td>
                   <td>
                     <span className="pill-cliente">
                       <span className="punto" style={{ background: e.campana_color }} />

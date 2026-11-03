@@ -112,7 +112,7 @@ export default function Correo() {
   }
   async function pausar() { await fetch(`/api/envios/${envioId}/pausar`, { method: "POST" }); }
   function descargar() { window.open(`/api/envios/${envioId}/informe`, "_blank"); }
-  function descargarConsolidado() { window.open(`/api/envios/${envioId}/informe-consolidado`, "_blank"); }
+  function descargarConsolidado() { window.open(`/api/envios/${envioId}/informe`, "_blank"); }
   function nueva() {
     setNombre(""); setAsunto(""); setCuerpo(""); setImagenUrl(""); setEnlace(""); setEnvioId(null); setDepu(null); setLogs([]); setEstado(null); setEnviando(false);
     setDividir(false); setSubIds([]); setSubEstados({});
@@ -158,7 +158,7 @@ export default function Correo() {
       <div className="card">
         <h2><span className="num">2</span> Base de correos</h2>
         <input type="file" ref={archivoRef} accept=".xlsx,.xls,.csv" disabled={!!envioId} />
-        <div className="hint">Se depura solo: separa varios correos por celda, corrige typos de dominio (gamil→gmail) y quita inválidos.</div>
+        <div className="hint">Se depura solo: separa varios correos por celda, corrige typos de dominio (gamil→gmail), quita inválidos y a quienes estén en la lista negra.</div>
         {!envioId && <button className="naranja" onClick={crearYSubir} disabled={cargando}>{cargando ? "Procesando…" : "Cargar y depurar"}</button>}
         {depu && (
           <div className="chips">
@@ -166,6 +166,7 @@ export default function Correo() {
             <div className="chip verde">{depu.validos}<small>Válidos</small></div>
             <div className="chip naranja">{depu.duplicados}<small>Duplicados</small></div>
             <div className="chip naranja">{depu.invalidos}<small>Inválidos</small></div>
+            {depu.lista_negra > 0 && <div className="chip gris">{depu.lista_negra}<small>En lista negra</small></div>}
           </div>
         )}
       </div>
@@ -202,7 +203,7 @@ export default function Correo() {
             {enviando && !subIds.length && estado?.estado === "en_curso" && <button className="sec" onClick={pausar}>⏸ Pausar</button>}
             {estado?.estado === "pausada" && !subIds.length && <button className="naranja" onClick={enviar}>▶ Reanudar</button>}
             {finalizada && !subIds.length && <button className="verde" onClick={descargar}>⬇ Descargar informe Excel</button>}
-            {subIds.length > 0 && <button className="verde" onClick={descargarConsolidado}>⬇ Descargar informe consolidado</button>}
+            {subIds.length > 0 && <button className="verde" onClick={descargarConsolidado}>⬇ Descargar informe (unificado)</button>}
             {(!!envioId) && <button className="sec" onClick={nueva}>+ Nuevo envío (el actual sigue en curso)</button>}
           </div>
 

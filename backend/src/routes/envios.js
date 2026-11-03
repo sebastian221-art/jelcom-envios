@@ -5,10 +5,49 @@ const { db } = require("../db");
 const { depurarTelefonos, depurarCorreos, analizarSMS } = require("../services/depurar");
 const motor = require("../services/motor");
 const informe = require("../services/informe");
-const informeConsolidado = require("../services/informeConsolidado");
+const listaNegra = require("../services/listaNegra");
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20*1024*1024 } });
+
+// ─────────────────────────────────────────────────────────────
+//  ENVÍOS DIVIDIDOS: un envío que se partió en sub-envíos se trata
+//  SIEMPRE como uno solo hacia afuera — los sub-envíos no aparecen en
+//  el historial, los totales se suman y hay UN solo informe.
+// ─────────────────────────────────────────────────────────────
+const hijosDe = (id) => db.prepare("SELECT * FROM envios WHERE padre_id=? ORDER BY id").all(id);
+
+// Estado del conjunto: en_curso si alguna parte corre, pausada si alguna
+// está pausada, finalizada cuando todas terminaron.
+function estadoFamilia(hijos) {
+  const est = hijos.map(h => h.estado);
+  if (est.includes("en_curso")) return "en_curso";
+  if (est.includes("pausada")) return "pausada";
+  if (est.every(e => ["finalizada", "error"].includes(e))) return est.every(e => e === "error") ? "error" : "finalizada";
+  return "en_curso"; // alguna parte aún en 'lista' esperando arrancar
+}
+
+// Devuelve el envío con los números de TODA su familia (original + partes).
+function vistaAgregada(e) {
+  if (!e || e.padre_id) return e;
+  const hijos = hijosDe(e.id);
+  if (!hijos.length) return e;
+  const ids = [e.id, ...hijos.map(h => h.id)];
+  const marcas = ids.map(() => "?").join(",");
+  const validos = db.prepare(`SELECT COUNT(*) n FROM contactos WHERE envio_id IN (${marcas})`).get(...ids).n;
+  const fines = hijos.map(h => h.enviado_en).filter(Boolean).sort();
+  return {
+    ...e,
+    estado: estadoFamilia(hijos),
+    total_validos: validos,
+    total_enviados: hijos.reduce((a, h) => a + (h.total_enviados || 0), e.total_enviados || 0),
+    total_errores: hijos.reduce((a, h) => a + (h.total_errores || 0), e.total_errores || 0),
+    enviado_en: fines.length ? fines[fines.length - 1] : e.enviado_en,
+    dividido: true,
+    num_partes: hijos.length,
+    partes: hijos.map(h => h.id),
+  };
+}
 
 router.post("/analizar-sms", (req, res) => {
   const { texto } = req.body;
@@ -28,26 +67,31 @@ router.post("/", (req, res) => {
 });
 
 // Listar envíos (con nombre de campaña). Filtros: ?campana_id= &desde= &hasta= &estados=en_curso,pausada
+// Los sub-envíos (partes de un envío dividido) NO se listan por separado:
+// se muestran sumados dentro de su envío original. ?incluir_partes=1 para verlos.
 router.get("/", (req, res) => {
-  const { campana_id, desde, hasta, estados } = req.query;
+  const { campana_id, desde, hasta, estados, incluir_partes } = req.query;
   let sql = `SELECT e.*, c.nombre AS campana_nombre, c.color AS campana_color
              FROM envios e JOIN campanas c ON c.id=e.campana_id WHERE 1=1`;
   const args = [];
+  if (!incluir_partes) sql += " AND e.padre_id IS NULL";
   if (campana_id) { sql += " AND e.campana_id=?"; args.push(campana_id); }
   if (desde) { sql += " AND date(e.creado_en)>=date(?)"; args.push(desde); }
   if (hasta) { sql += " AND date(e.creado_en)<=date(?)"; args.push(hasta); }
+  sql += " ORDER BY e.id DESC";
+  let filas = db.prepare(sql).all(...args).map(vistaAgregada);
   if (estados) {
     const lista = estados.split(",").map(s => s.trim()).filter(Boolean);
-    if (lista.length) { sql += ` AND e.estado IN (${lista.map(() => "?").join(",")})`; args.push(...lista); }
+    if (lista.length) filas = filas.filter(e => lista.includes(e.estado));
   }
-  sql += " ORDER BY e.id DESC";
-  res.json(db.prepare(sql).all(...args));
+  res.json(filas);
 });
 
 router.get("/:id", (req, res) => {
-  const e = db.prepare("SELECT * FROM envios WHERE id=?").get(req.params.id);
+  const e = db.prepare(`SELECT e.*, c.nombre AS campana_nombre FROM envios e
+                        LEFT JOIN campanas c ON c.id=e.campana_id WHERE e.id=?`).get(req.params.id);
   if (!e) return res.status(404).json({ error: "No existe" });
-  res.json(e);
+  res.json(vistaAgregada(e));
 });
 
 // Borra un envío. Solo se permite si todavía no se procesó nada: estado
@@ -57,6 +101,9 @@ router.delete("/:id", (req, res) => {
   const e = db.prepare("SELECT * FROM envios WHERE id=?").get(req.params.id);
   if (!e) return res.status(404).json({ error: "No existe" });
 
+  if (hijosDe(e.id).length) {
+    return res.status(400).json({ error: "No se puede borrar: este envío ya fue dividido en partes" });
+  }
   if (!["borrador", "lista"].includes(e.estado)) {
     return res.status(400).json({ error: "Solo se puede borrar un envío en estado 'borrador' o 'lista'" });
   }
@@ -77,7 +124,16 @@ router.post("/:id/base", upload.single("archivo"), (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Falta el archivo" });
 
   const depura = e.canal === "correo" ? depurarCorreos : depurarTelefonos;
-  const { validos, descartados, totalBase } = depura(req.file.buffer);
+  const resultado = depura(req.file.buffer);
+  const { descartados, totalBase } = resultado;
+
+  // Quita a quienes están en la lista negra (pidieron no recibir más mensajes)
+  const bloqueados = listaNegra.conjunto();
+  const validos = [];
+  for (const v of resultado.validos) {
+    if (listaNegra.enConjunto(bloqueados, v)) descartados.push({ valor: v, motivo: "lista_negra" });
+    else validos.push(v);
+  }
 
   db.prepare("DELETE FROM contactos WHERE envio_id=?").run(e.id);
   db.prepare("DELETE FROM descartados WHERE envio_id=?").run(e.id);
@@ -93,7 +149,8 @@ router.post("/:id/base", upload.single("archivo"), (req, res) => {
   db.prepare(`UPDATE envios SET total_base=?, total_validos=?, total_dup=?, total_invalid=?, estado='lista' WHERE id=?`)
     .run(totalBase, validos.length, dup, inv, e.id);
 
-  res.json({ total_base: totalBase, validos: validos.length, duplicados: dup, invalidos: inv });
+  const ln = descartados.filter(d=>d.motivo==="lista_negra").length;
+  res.json({ total_base: totalBase, validos: validos.length, duplicados: dup, invalidos: inv, lista_negra: ln });
 });
 
 // Genera el audio de ElevenLabs si hace falta (bot de voz, modo 'texto'), una sola vez.
@@ -111,6 +168,13 @@ async function asegurarAudioVoz(e) {
 router.post("/:id/enviar", async (req, res) => {
   const e = db.prepare("SELECT * FROM envios WHERE id=?").get(req.params.id);
   if (!e) return res.status(404).json({ error: "No existe" });
+
+  // Envío dividido: "reanudar" el original = reanudar sus partes pausadas.
+  const hijos = hijosDe(e.id);
+  if (hijos.length) {
+    hijos.filter(h => ["pausada", "lista"].includes(h.estado)).forEach(h => motor.procesar(h.id).catch(() => {}));
+    return res.json({ ok: true, partes: hijos.length });
+  }
   if (e.total_validos === 0) return res.status(400).json({ error: "Sube una base primero" });
 
   try { await asegurarAudioVoz(e); }
@@ -124,25 +188,37 @@ router.post("/:id/enviar", async (req, res) => {
 });
 
 router.post("/:id/pausar", (req, res) => {
+  const hijos = hijosDe(Number(req.params.id));
+  if (hijos.length) {
+    const ok = hijos.map(h => motor.pausar(h.id)).some(Boolean);
+    return res.json({ ok });
+  }
   const ok = motor.pausar(Number(req.params.id));
   res.json({ ok });
 });
 
 router.get("/:id/logs", (req, res) => {
   const desde = Number(req.query.desde || 0);
-  const logs = db.prepare("SELECT * FROM logs WHERE envio_id=? AND id>? ORDER BY id").all(req.params.id, desde);
-  const e = db.prepare("SELECT estado, total_enviados, total_errores, total_validos FROM envios WHERE id=?").get(req.params.id);
-  res.json({ logs, envio: e });
+  const e = db.prepare("SELECT * FROM envios WHERE id=?").get(req.params.id);
+  if (!e) return res.status(404).json({ error: "No existe" });
+  const ids = [e.id, ...hijosDe(e.id).map(h => h.id)];
+  const logs = db.prepare(`SELECT * FROM logs WHERE envio_id IN (${ids.map(() => "?").join(",")}) AND id>? ORDER BY id`).all(...ids, desde);
+  const v = vistaAgregada(e);
+  res.json({ logs, envio: { estado: v.estado, total_enviados: v.total_enviados, total_errores: v.total_errores, total_validos: v.total_validos } });
 });
 
-router.get("/:id/informe", async (req, res) => {
+// Informe Excel. Si el envío se dividió (o si piden el de una de sus partes),
+// devuelve UN SOLO informe unificado con todo el envío original + sus partes.
+async function enviarInforme(req, res) {
   try {
     const { buffer, nombre } = await informe.generarEnvio(req.params.id);
     res.setHeader("Content-Disposition", `attachment; filename="${nombre}"`);
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.send(Buffer.from(buffer));
   } catch (e) { res.status(500).json({ error: e.message }); }
-});
+}
+router.get("/:id/informe", enviarInforme);
+router.get("/:id/informe-consolidado", enviarInforme); // mismo informe unificado (se deja por compatibilidad)
 
 // Divide un envío en N sub-envíos y los lanza todos en paralelo.
 // Body: { cantidad } — en cuántas partes dividirlo.
@@ -156,8 +232,12 @@ router.post("/:id/dividir", async (req, res) => {
   try { await asegurarAudioVoz(original); }
   catch (err) { return res.status(400).json({ error: err.message }); }
 
+  if (original.padre_id) return res.status(400).json({ error: "Este ya es una parte de un envío dividido" });
+  if (hijosDe(original.id).length) return res.status(400).json({ error: "Este envío ya fue dividido" });
+
   motor.pausar(original.id);
   await new Promise(r => setTimeout(r, 1500)); // deja terminar el mensaje a medias, si había uno
+  listaNegra.aplicarAEnvio(original.id); // nadie de la lista negra pasa a las partes
 
   const pendientes = db.prepare("SELECT * FROM contactos WHERE envio_id=? AND estado='pendiente'").all(original.id);
   if (pendientes.length === 0) return res.status(400).json({ error: "No hay contactos pendientes para dividir" });
@@ -195,17 +275,6 @@ router.post("/:id/dividir", async (req, res) => {
   nuevosIds.forEach(id => motor.procesar(id).catch(() => {}));
 
   res.json({ ids: nuevosIds });
-});
-
-// Informe consolidado: el envío original + todos sus sub-envíos (padre_id),
-// en UN solo Excel, sumando enviados/errores sin duplicar la base.
-router.get("/:id/informe-consolidado", async (req, res) => {
-  try {
-    const { buffer, nombre } = await informeConsolidado.generar(req.params.id);
-    res.setHeader("Content-Disposition", `attachment; filename="${nombre}"`);
-    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    res.send(Buffer.from(buffer));
-  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 module.exports = router;

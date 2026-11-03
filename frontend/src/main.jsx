@@ -15,6 +15,7 @@ import Historial from "./pages/Historial.jsx";
 import Placeholder from "./pages/Placeholder.jsx";
 import EnvioDetalle from "./pages/EnvioDetalle.jsx";
 import ApiExterna from "./pages/ApiExterna.jsx";
+import ListaNegra from "./pages/ListaNegra.jsx";
 import "./styles.css";
 
 ReactDOM.createRoot(document.getElementById("root")).render(
@@ -35,6 +36,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
           <Route path="/configuracion" element={<Configuracion />} />
           <Route path="/usuarios" element={<Usuarios />} />
           <Route path="/api-externa" element={<ApiExterna />} />
+          <Route path="/lista-negra" element={<ListaNegra />} />
         </Routes>
       </Layout>
     </BrowserRouter>

@@ -19,16 +19,50 @@ const CEN = { horizontal:"center", vertical:"middle" };
 const IZQ = { horizontal:"left", vertical:"middle" };
 const miles = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
 
+// Familia de un envío: el original + sus partes (si se dividió).
+// Si piden el informe de una PARTE, se genera el del original completo:
+// un envío dividido tiene siempre UN solo informe.
+function familia(envioId) {
+  const e = db.prepare("SELECT id, padre_id FROM envios WHERE id=?").get(envioId);
+  if (!e) return null;
+  const raizId = e.padre_id || e.id;
+  const hijos = db.prepare("SELECT * FROM envios WHERE padre_id=? ORDER BY id").all(raizId);
+  return { raizId, hijos, ids: [raizId, ...hijos.map(h => h.id)] };
+}
+
+function estadoFamilia(raiz, hijos) {
+  if (!hijos.length) return raiz.estado;
+  const est = hijos.map(h => h.estado);
+  if (est.includes("en_curso")) return "en_curso";
+  if (est.includes("pausada")) return "pausada";
+  if (est.every(x => ["finalizada","error"].includes(x))) return est.every(x => x === "error") ? "error" : "finalizada";
+  return "en_curso";
+}
+
+const MOTIVOS = {
+  duplicado: "Duplicado (ya estaba en la base)",
+  invalido: "Sin dato válido",
+  lista_negra: "En lista negra (pidió no recibir mensajes)",
+};
+
 async function generarEnvio(envioId) {
-  const c = db.prepare("SELECT e.*, cm.nombre AS campana_nombre FROM envios e JOIN campanas cm ON cm.id=e.campana_id WHERE e.id=?").get(envioId);
+  const fam = familia(envioId);
+  if (!fam) throw new Error("Envío no encontrado");
+  const c = db.prepare("SELECT e.*, cm.nombre AS campana_nombre FROM envios e JOIN campanas cm ON cm.id=e.campana_id WHERE e.id=?").get(fam.raizId);
   if (!c) throw new Error("Envío no encontrado");
-  const contactos = db.prepare("SELECT * FROM contactos WHERE envio_id=? ORDER BY id").all(envioId);
-  const descartados = db.prepare("SELECT * FROM descartados WHERE envio_id=? ORDER BY id").all(envioId);
+  const marcas = fam.ids.map(() => "?").join(",");
+  const contactos = db.prepare(`SELECT * FROM contactos WHERE envio_id IN (${marcas}) ORDER BY id`).all(...fam.ids);
+  const descartados = db.prepare(`SELECT * FROM descartados WHERE envio_id IN (${marcas}) ORDER BY id`).all(...fam.ids);
+  const dividido = fam.hijos.length > 0;
+  const estado = estadoFamilia(c, fam.hijos);
+  const fines = [c.enviado_en, ...fam.hijos.map(h => h.enviado_en)].filter(Boolean).sort();
+  const fecha = fines.length ? fines[fines.length - 1] : c.creado_en;
 
   const enviados = contactos.filter(x => x.estado !== "error" && x.estado !== "pendiente");
   const errores = contactos.filter(x => x.estado === "error");
   const dupCount = descartados.filter(d => d.motivo==="duplicado").length;
   const invCount = descartados.filter(d => d.motivo==="invalido").length;
+  const lnCount = descartados.filter(d => d.motivo==="lista_negra").length;
 
   const wb = new ExcelJS.Workbook();
 
@@ -56,8 +90,8 @@ async function generarEnvio(envioId) {
     ["Cliente:", c.campana_nombre],
     ["Envío:", c.nombre],
     ["Canal:", c.canal.toUpperCase()],
-    ["Estado:", c.estado],
-    ["Fecha de envío:", c.enviada_en || c.creada_en],
+    ["Estado:", dividido ? `${estado} (enviado en ${fam.hijos.length} partes en paralelo)` : estado],
+    ["Fecha de envío:", fecha],
   ];
   let r=5;
   for (const [k,v] of ficha){
@@ -67,12 +101,12 @@ async function generarEnvio(envioId) {
   }
 
   banda(11,"RESUMEN DE PROCESAMIENTO");
-  kpi(12, ["Registros en base","Duplicados/Inválidos","ENVIADOS","Fallidos"],
-       [miles(c.total_base), miles(dupCount+invCount), miles(enviados.length), miles(errores.length)],
+  kpi(12, ["Registros en base","Descartados","ENVIADOS","Fallidos"],
+       [miles(c.total_base), miles(dupCount+invCount+lnCount), miles(enviados.length), miles(errores.length)],
        [GRISC,NARANJB,VERDEB,GRISC], [AZUL,NARANJA,VERDE,ROJO]);
   ws.mergeCells(14,2,14,5);
   const nota=ws.getCell(14,2);
-  nota.value=`La base contenía ${miles(c.total_base)} registros. Se depuró a ${miles(c.total_validos)} contactos únicos (${dupCount} duplicados, ${invCount} inválidos). Envío ejecutado por la plataforma JELCOM.`;
+  nota.value=`La base contenía ${miles(c.total_base)} registros. Se depuró a ${miles(contactos.length)} contactos únicos (${dupCount} duplicados, ${invCount} inválidos${lnCount ? `, ${lnCount} en lista negra` : ""}). Envío ejecutado por la plataforma JELCOM.`;
   nota.font=arial(8,false,GRISCL,true); nota.alignment={horizontal:"center",vertical:"middle",wrapText:true}; ws.getRow(14).height=18;
 
   banda(16,"MENSAJE ENVIADO");
@@ -99,11 +133,11 @@ async function generarEnvio(envioId) {
   const ds = wb.addWorksheet("Descartados", { views:[{showGridLines:false, state:"frozen", ySplit:4}] });
   [8,26,34].forEach((w,i)=> ds.getColumn(i+1).width=w);
   ds.mergeCells(1,1,1,3); const dt=ds.getCell(1,1); dt.value=`REGISTROS DESCARTADOS (${descartados.length})`; dt.font=arial(13,true,BLANCO); dt.fill=fill(NARANJA); dt.alignment=CEN; ds.getRow(1).height=26;
-  ds.mergeCells(2,1,2,3); const dsub=ds.getCell(2,1); dsub.value=`${dupCount} duplicados y ${invCount} sin dato válido. Ninguno con dato correcto quedó fuera del envío.`; dsub.font=arial(9,false,GRIS,true); dsub.alignment={horizontal:"center",vertical:"middle",wrapText:true}; ds.getRow(2).height=22;
+  ds.mergeCells(2,1,2,3); const dsub=ds.getCell(2,1); dsub.value=`${dupCount} duplicados, ${invCount} sin dato válido${lnCount ? ` y ${lnCount} en lista negra (excluidos a petición del titular)` : ""}.`; dsub.font=arial(9,false,GRIS,true); dsub.alignment={horizontal:"center",vertical:"middle",wrapText:true}; ds.getRow(2).height=22;
   ["#","Valor","Motivo"].forEach((h,j)=>{ const cell=ds.getCell(4,1+j); cell.value=h; cell.font=arial(10,true,BLANCO); cell.fill=fill(NARANJA); cell.alignment=CEN; cell.border=BD; });
   descartados.forEach((x,i)=>{
     const row=i+5; const bg=i%2?NARANJF:BLANCO;
-    [i+1, x.valor, x.motivo==="duplicado"?"Duplicado (ya estaba en la base)":"Sin dato válido"].forEach((v,j)=>{
+    [i+1, x.valor, MOTIVOS[x.motivo] || x.motivo].forEach((v,j)=>{
       const cell=ds.getCell(row,1+j); cell.value=v; cell.border=BD; cell.fill=fill(bg);
       cell.font=arial(9, false, j===2?MARRON:"FF000000"); cell.alignment=j===2?IZQ:CEN; if(j===1) cell.numFmt="@";
     });
@@ -139,7 +173,7 @@ async function generarConsolidado(campanaId, desde, hasta) {
   const camp = db.prepare("SELECT * FROM campanas WHERE id=?").get(campanaId);
   if (!camp) throw new Error("Campaña no encontrada");
 
-  let sql = "SELECT * FROM envios WHERE campana_id=?";
+  let sql = "SELECT * FROM envios WHERE campana_id=? AND padre_id IS NULL";
   const args = [campanaId];
   if (desde) { sql += " AND date(creado_en)>=date(?)"; args.push(desde); }
   if (hasta) { sql += " AND date(creado_en)<=date(?)"; args.push(hasta); }
@@ -167,9 +201,17 @@ async function generarConsolidado(campanaId, desde, hasta) {
 
   let r=7, totBase=0, totEnv=0;
   const porCanal={};
-  envios.forEach((e,i)=>{
+  envios.forEach((e0,i)=>{
     const bg=i%2?ALT:BLANCO;
-    const entregados=db.prepare("SELECT COUNT(*) n FROM contactos WHERE envio_id=? AND estado IN ('entregado','leido')").get(e.id).n;
+    // Si el envío se dividió, se muestra como UNA fila con todas sus partes sumadas
+    const fam = familia(e0.id);
+    const marcas = fam.ids.map(() => "?").join(",");
+    const e = { ...e0,
+      total_validos: db.prepare(`SELECT COUNT(*) n FROM contactos WHERE envio_id IN (${marcas})`).get(...fam.ids).n,
+      total_enviados: fam.hijos.reduce((a,h)=>a+(h.total_enviados||0), e0.total_enviados||0),
+      estado: estadoFamilia(e0, fam.hijos),
+    };
+    const entregados=db.prepare(`SELECT COUNT(*) n FROM contactos WHERE envio_id IN (${marcas}) AND estado IN ('entregado','leido')`).get(...fam.ids).n;
     const row=[i+1, e.nombre, e.canal.toUpperCase(), e.total_validos||0, e.total_enviados||0, entregados||"—", e.estado];
     row.forEach((v,j)=>{ const cell=ws.getCell(r,2+j); cell.value=v; cell.border=BD; cell.fill=fill(bg); cell.font=arial(9, j===1); cell.alignment=j===1?IZQ:CEN; });
     totBase+=e.total_validos||0; totEnv+=e.total_enviados||0;

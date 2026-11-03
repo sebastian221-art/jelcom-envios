@@ -23,6 +23,7 @@ export default function Layout({ children }) {
 
           <div className="grupo">Gestión</div>
           <NavLink to="/historial" className={link}><span className="ico">📊</span> Historial de envíos</NavLink>
+          <NavLink to="/lista-negra" className={link}><span className="ico">🚫</span> Lista negra</NavLink>
           <NavLink to="/conexiones" className={link}><span className="ico">🔌</span> Conexiones</NavLink>
 
           <div className="grupo">Sistema</div>

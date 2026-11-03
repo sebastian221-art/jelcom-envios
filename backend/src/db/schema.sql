@@ -276,3 +276,19 @@ CREATE TABLE IF NOT EXISTS api_keys (
   creada_en   TEXT DEFAULT (datetime('now','localtime')),
   ultimo_uso  TEXT
 );
+-- ─────────────────────────────────────────────────────────────
+--  LISTA NEGRA — personas que pidieron no recibir más mensajes.
+--  Se excluyen de TODOS los canales (SMS, WhatsApp, Correo, Voz),
+--  al cargar la base, al iniciar/dividir un envío y justo antes de
+--  cada mensaje (por si se agregan a mitad de un envío en curso).
+--  valor: teléfono normalizado a 10 dígitos (3XXXXXXXXX) o correo en minúsculas.
+-- ─────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS lista_negra (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  valor       TEXT NOT NULL UNIQUE,
+  tipo        TEXT NOT NULL CHECK (tipo IN ('telefono','correo')),
+  nombre      TEXT,
+  documento   TEXT,
+  motivo      TEXT,
+  creado_en   TEXT DEFAULT (datetime('now','localtime'))
+);

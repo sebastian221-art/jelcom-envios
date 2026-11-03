@@ -10,6 +10,7 @@ const labsmobile = require("./proveedores/labsmobile");
 const meta = require("./proveedores/meta");
 const brevo = require("./proveedores/brevo");
 const twilio = require("./proveedores/twilio");
+const listaNegra = require("./listaNegra");
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 const activos = new Map(); // envio_id -> { pausar: bool }
@@ -62,6 +63,7 @@ async function procesar(envioId) {
   activos.set(envioId, { pausar: false });
   db.prepare("UPDATE envios SET estado='en_curso' WHERE id=?").run(envioId);
   log(envioId, "▶️ Envío iniciado / reanudado");
+  listaNegra.aplicarAEnvio(envioId); // saca de una vez a los que ya estén en lista negra
 
   const pendientes = db.prepare("SELECT * FROM contactos WHERE envio_id=? AND estado='pendiente' ORDER BY id").all(envioId);
   log(envioId, `Pendientes por enviar: ${pendientes.length}`);
@@ -80,6 +82,13 @@ async function procesar(envioId) {
       return { pausado: true, ok, err };
     }
     const c = pendientes[i];
+    // Revisión de último momento: si lo agregaron a la lista negra mientras
+    // el envío corría, NO se le envía y se sigue con el siguiente.
+    if (listaNegra.bloqueado(c.destino)) {
+      const sigue = db.prepare("SELECT 1 FROM contactos WHERE id=?").get(c.id);
+      if (sigue) { listaNegra.excluirContacto(envioId, c); log(envioId, `🚫 ${c.destino}: en lista negra, se omitió`, "warn"); }
+      continue;
+    }
     let enviado = false, ultimoError = "";
     for (let intento = 1; intento <= 3 && !enviado; intento++) {
       // Si el proveedor tira una excepción (no solo { ok:false }), la tratamos
