@@ -50,7 +50,12 @@ async function probar() {
   if (!estaConfigurado()) return { estado: "sin_probar", detalle: "Faltan MAILGUN_API_KEY y MAILGUN_DOMAIN" };
   try {
     const resp = await axios.get(`${c.api}/domains/${c.dominio}`, { auth: auth(c), timeout: 15000 });
-    const estado = resp.data?.domain?.state;
+    const dom = resp.data?.domain || {};
+    const estado = dom.state;
+    if (estado === "disabled" || dom.is_disabled) {
+      const motivo = [dom.disabled?.reason, dom.disabled?.note].filter(Boolean).join(" — ");
+      return { estado: "error", detalle: `Mailgun DESHABILITÓ el dominio ${c.dominio}${motivo ? ": " + motivo : ""}. No es DNS: revisa el correo de Mailgun o abre un ticket de soporte.` };
+    }
     return estado === "active"
       ? { estado: "ok", detalle: `Dominio ${c.dominio} verificado` }
       : { estado: "error", detalle: `Dominio ${c.dominio} en estado "${estado}" (faltan registros DNS)` };
