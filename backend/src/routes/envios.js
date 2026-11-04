@@ -232,6 +232,8 @@ router.get("/:id/informe-consolidado", enviarInforme); // mismo informe unificad
 router.post("/:id/dividir", async (req, res) => {
   const original = db.prepare("SELECT * FROM envios WHERE id=?").get(req.params.id);
   if (!original) return res.status(404).json({ error: "No existe" });
+  // Correo NO se divide: mandar en paralelo es lo que hace que el proveedor bloquee el dominio.
+  if (original.canal === "correo") return res.status(400).json({ error: "Los correos no se dividen: en paralelo el proveedor bloquea el dominio. Desmarca 'Dividir' y envíalo normal (va a 1 por segundo)." });
   const cantidad = Math.max(2, Number(req.body.cantidad) || 2);
 
   // Si es bot de voz con texto (ElevenLabs), genera el audio UNA vez antes de

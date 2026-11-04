@@ -66,6 +66,9 @@ const esRed = (m) => /timeout|ECONN|network|socket|ETIMEDOUT|EAI_AGAIN/i.test(m 
 const esLimite = (m) => /\b429\b|too many|rate.?limit|throttl|slow down|limit exceeded/i.test(m || "");
 
 // Pausa (ms) entre contactos en la SEGUNDA PASADA (más lenta que la normal).
+// Pausa entre contactos en la primera pasada. Correo va más despacio por defecto
+// (1 por segundo ≈ 3.600/hora) para no disparar los bloqueos del proveedor.
+const pausaEntre = (canal) => canal === "correo" ? (Number(process.env.CORREO_DELAY_MS) || 1000) : 300;
 const delayReintento = () => Number(process.env.REINTENTO_DELAY_MS) || 1200;
 // Espera base cuando el proveedor responde 429 / "vas muy rápido".
 const esperaLimite = () => Number(process.env.LIMITE_ESPERA_MS) || 15000;
@@ -192,7 +195,7 @@ async function procesar(envioId) {
     if (r.ok) { updOk.run(r.comprobante, 1, c.id); incEnv.run(envioId); ok++; }
     else { updErr.run(r.error, c.id); incErr.run(envioId); err++; if (err <= 5) log(envioId, `❌ ${c.destino}: ${r.error}`, "error"); }
     if (i % 50 === 0 || i === pendientes.length - 1) log(envioId, `Progreso: ${i + 1}/${pendientes.length} · enviados ${ok} · errores ${err}`);
-    await delay(300);
+    await delay(pausaEntre(envio.canal));
   }
 
   // Envío dividido: la segunda pasada la hace SOLO la última parte en terminar,
