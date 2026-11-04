@@ -38,7 +38,9 @@ async function enviarUno(email, { asunto, cuerpo, imagenUrl, enlace }) {
     );
     return { ok: true, comprobante: resp.data?.messageId || "" };
   } catch (e) {
-    return { ok: false, error: e.response?.data?.message || e.message };
+    const status = e.response?.status;
+    const msg = e.response?.data?.message || e.message;
+    return { ok: false, error: status ? `${status}: ${msg}` : msg };
   }
 }
 

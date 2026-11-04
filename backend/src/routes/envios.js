@@ -197,6 +197,13 @@ router.post("/:id/pausar", (req, res) => {
   res.json({ ok });
 });
 
+// Reintentar fallidos (manual): vuelve a enviar, despacio y de a uno, a todos
+// los contactos que quedaron en error (en un envío dividido: de todas sus partes).
+router.post("/:id/reintentar-fallidos", (req, res) => {
+  try { res.json({ ok: true, ...motor.reintentarFallidos(Number(req.params.id)) }); }
+  catch (e) { res.status(e.message.includes("corriendo") ? 409 : 400).json({ error: e.message }); }
+});
+
 router.get("/:id/logs", (req, res) => {
   const desde = Number(req.query.desde || 0);
   const e = db.prepare("SELECT * FROM envios WHERE id=?").get(req.params.id);

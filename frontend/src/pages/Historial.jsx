@@ -20,7 +20,19 @@ export default function Historial() {
     setEnvios(r);
   }
   useEffect(() => { cargar(); }, [cliente, desde, hasta]);
+  // Si hay algo corriendo (p. ej. un reintento), refresca cada 10 s
+  useEffect(() => {
+    if (!envios.some(e => e.estado === "en_curso")) return;
+    const t = setInterval(cargar, 10000); return () => clearInterval(t);
+  }, [envios]);
 
+  async function reintentar(e) {
+    if (!confirm(`¿Reintentar los ${e.total_errores.toLocaleString("es-CO")} fallidos de "${e.nombre}"?\nSe envían uno por uno, más despacio.`)) return;
+    const r = await fetch(`/api/envios/${e.id}/reintentar-fallidos`, { method: "POST" }).then(r => r.json());
+    if (r.error) { alert(r.error); return; }
+    alert(r.fallidos ? `Reintentando ${r.fallidos.toLocaleString("es-CO")} fallidos. El estado queda "en_curso" hasta que termine; luego descarga el informe otra vez.` : "No hay fallidos para reintentar.");
+    cargar();
+  }
   function informeEnvio(id) { window.open(`/api/envios/${id}/informe`, "_blank"); }
   function consolidado() {
     if (!cliente) { alert("Elige un cliente para el informe consolidado"); return; }
@@ -97,6 +109,8 @@ export default function Historial() {
                     {e.estado === "finalizada"
                       ? <button className="sec" onClick={() => informeEnvio(e.id)}>⬇ Excel</button>
                       : <span style={{ opacity: .3 }}>—</span>}
+                    {e.estado === "finalizada" && e.total_errores > 0 &&
+                      <button className="sec" style={{ marginLeft: 6 }} onClick={() => reintentar(e)}>🔁 Reintentar {e.total_errores.toLocaleString("es-CO")} fallidos</button>}
                   </td>
                 </tr>
               ))}

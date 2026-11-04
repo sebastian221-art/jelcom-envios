@@ -37,7 +37,10 @@ async function enviarUno(email, { asunto, cuerpo, imagenUrl, enlace }) {
     });
     return { ok: true, comprobante: resp.data?.id || "" };
   } catch (e) {
-    return { ok: false, error: e.response?.data?.message || e.message };
+    // Se guarda el código HTTP (ej. "429: ...") para saber si fue por ir muy rápido.
+    const status = e.response?.status;
+    const msg = e.response?.data?.message || (typeof e.response?.data === "string" ? e.response.data.slice(0, 200) : "") || e.message;
+    return { ok: false, error: status ? `${status}: ${msg}` : msg };
   }
 }
 

@@ -2,6 +2,7 @@
 //  MOTOR DE ENVÍO — único para todos los canales.
 //  Procesa los contactos 'pendiente' de un ENVÍO.
 //  Reintenta, se puede PAUSAR y REANUDAR, registra estado real y logs.
+//  Al terminar hace una SEGUNDA PASADA lenta con los que fallaron.
 // ─────────────────────────────────────────────────────────────
 const { db } = require("../db");
 const hablame = require("./proveedores/hablame");
@@ -58,6 +59,106 @@ async function enviarSegunCanal(canal, envio, contacto) {
   return { ok: false, error: `Canal ${canal} aún no implementado` };
 }
 
+// ── Clasificación de errores ─────────────────────────────────
+// Temporales: vale la pena reintentar (red caída, proveedor saturado,
+// "vas muy rápido" = 429 / rate limit, errores 5xx del proveedor).
+const esRed = (m) => /timeout|ECONN|network|socket|ETIMEDOUT|EAI_AGAIN/i.test(m || "");
+const esLimite = (m) => /\b429\b|too many|rate.?limit|throttl|slow down|limit exceeded/i.test(m || "");
+
+// Pausa (ms) entre contactos en la SEGUNDA PASADA (más lenta que la normal).
+const delayReintento = () => Number(process.env.REINTENTO_DELAY_MS) || 1200;
+// Espera base cuando el proveedor responde 429 / "vas muy rápido".
+const esperaLimite = () => Number(process.env.LIMITE_ESPERA_MS) || 15000;
+
+// Envía a UN contacto con hasta 3 intentos. Si el proveedor dice que vamos
+// muy rápido (429) espera cada vez más (15 s, 30 s…) antes de volver a intentar.
+async function enviarConReintentos(envioId, envio, c, factor = 1) {
+  let ultimoError = "";
+  for (let intento = 1; intento <= 3; intento++) {
+    let r;
+    try { r = await enviarSegunCanal(envio.canal, envio, c); }
+    catch (e) { r = { ok: false, error: e.message || String(e) }; }
+    if (r.ok) return { ok: true, comprobante: r.comprobante || "" };
+    ultimoError = r.error || "error desconocido";
+    if (intento === 3) break;
+    if (esLimite(ultimoError)) {
+      const ms = esperaLimite() * factor * intento;
+      log(envioId, `🐢 ${c.destino}: el proveedor pide ir más despacio (${ultimoError.slice(0, 80)}). Esperando ${Math.round(ms / 1000)} s…`, "warn");
+      await delay(ms);
+    } else if (esRed(ultimoError)) {
+      log(envioId, `⚠️ ${c.destino}: fallo de red (intento ${intento}/3), reintentando...`, "warn");
+      await delay(3000);
+    } else break; // error definitivo (correo inválido, número malo…): no insistir
+  }
+  return { ok: false, error: ultimoError };
+}
+
+function pausarAqui(envioId) {
+  db.prepare("UPDATE envios SET estado='pausada' WHERE id=?").run(envioId);
+  log(envioId, "⏸️ Envío pausado. Puedes reanudarlo cuando quieras.", "warn");
+  activos.delete(envioId);
+}
+
+function finalizar(envioId) {
+  db.prepare("UPDATE envios SET estado='finalizada', enviado_en=datetime('now','localtime') WHERE id=?").run(envioId);
+  activos.delete(envioId);
+}
+
+// ─────────────────────────────────────────────────────────────
+//  SEGUNDA PASADA: vuelve a enviar, UNO POR UNO y más despacio, a los
+//  contactos que quedaron en error. Recorre todos los envíos de `ids`
+//  (en un envío dividido: todas sus partes) desde UN solo proceso, así
+//  no se dispara en paralelo. `todos=false` → solo los que aún no tuvieron
+//  segunda pasada (intento <= 3); `todos=true` → todos los fallidos.
+// ─────────────────────────────────────────────────────────────
+async function segundaPasada(controlId, ids, { todos = false } = {}) {
+  const marcas = ids.map(() => "?").join(",");
+  const fallidos = db.prepare(
+    `SELECT * FROM contactos WHERE envio_id IN (${marcas}) AND estado='error' ${todos ? "" : "AND COALESCE(intento,0) <= 3"} ORDER BY id`
+  ).all(...ids);
+  if (!fallidos.length) return { ok: 0, err: 0 };
+
+  const pausa = delayReintento();
+  log(controlId, `🔁 Segunda pasada: reintentando ${fallidos.length} fallido(s) más despacio (1 cada ${(pausa / 1000).toFixed(1)} s)…`);
+  const envios = new Map(ids.map(id => [id, db.prepare("SELECT * FROM envios WHERE id=?").get(id)]));
+  const updOk = db.prepare("UPDATE contactos SET estado='enviado', comprobante=?, enviado_en=datetime('now','localtime'), detalle_error=NULL, intento=? WHERE id=?");
+  const updErr = db.prepare("UPDATE contactos SET detalle_error=?, intento=? WHERE id=?");
+  const pasarAEnviado = db.prepare("UPDATE envios SET total_enviados=total_enviados+1, total_errores=MAX(total_errores-1,0) WHERE id=?");
+  const quitarError = db.prepare("UPDATE envios SET total_errores=MAX(total_errores-1,0) WHERE id=?");
+
+  let ok = 0, err = 0;
+  for (let i = 0; i < fallidos.length; i++) {
+    if (activos.get(controlId)?.pausar) { pausarAqui(controlId); return { pausado: true, ok, err }; }
+    const c = fallidos[i];
+    const intentoPrevio = Math.max(Number(c.intento) || 0, 3);
+    if (listaNegra.bloqueado(c.destino)) {
+      if (db.prepare("SELECT 1 FROM contactos WHERE id=?").get(c.id)) {
+        listaNegra.excluirContacto(c.envio_id, c); quitarError.run(c.envio_id);
+        log(controlId, `🚫 ${c.destino}: en lista negra, se omitió`, "warn");
+      }
+      continue;
+    }
+    const r = await enviarConReintentos(controlId, envios.get(c.envio_id), c, 2);
+    if (r.ok) { updOk.run(r.comprobante, intentoPrevio + 1, c.id); pasarAEnviado.run(c.envio_id); ok++; }
+    else { updErr.run(r.error, intentoPrevio + 1, c.id); err++; if (err <= 5) log(controlId, `❌ (2ª pasada) ${c.destino}: ${r.error}`, "error"); }
+    if (i % 50 === 0 || i === fallidos.length - 1) log(controlId, `Segunda pasada: ${i + 1}/${fallidos.length} · recuperados ${ok} · siguen fallando ${err}`);
+    await delay(pausa);
+  }
+  log(controlId, `✅ Segunda pasada terminada: recuperados ${ok} · siguen fallando ${err}`);
+  return { ok, err };
+}
+
+// ¿Quedan otras partes de la misma familia corriendo, pausadas o sin arrancar?
+function hermanosPendientes(envio) {
+  if (!envio.padre_id) return false;
+  return db.prepare("SELECT id, estado FROM envios WHERE padre_id=? AND id<>?").all(envio.padre_id, envio.id)
+    .some(h => activos.has(h.id) || ["en_curso", "pausada", "lista"].includes(h.estado));
+}
+const familiaDe = (envio) => {
+  const raiz = envio.padre_id || envio.id;
+  return [raiz, ...db.prepare("SELECT id FROM envios WHERE padre_id=? ORDER BY id").all(raiz).map(h => h.id)];
+};
+
 async function procesar(envioId) {
   const envio = db.prepare("SELECT * FROM envios WHERE id=?").get(envioId);
   if (!envio) throw new Error("Envío no encontrado");
@@ -72,18 +173,13 @@ async function procesar(envioId) {
   log(envioId, `Pendientes por enviar: ${pendientes.length}`);
 
   const updOk = db.prepare("UPDATE contactos SET estado='enviado', comprobante=?, enviado_en=datetime('now','localtime'), intento=? WHERE id=?");
-  const updErr = db.prepare("UPDATE contactos SET estado='error', detalle_error=?, intento=? WHERE id=?");
+  const updErr = db.prepare("UPDATE contactos SET estado='error', detalle_error=?, intento=3 WHERE id=?");
   const incEnv = db.prepare("UPDATE envios SET total_enviados=total_enviados+1 WHERE id=?");
   const incErr = db.prepare("UPDATE envios SET total_errores=total_errores+1 WHERE id=?");
 
   let ok = 0, err = 0;
   for (let i = 0; i < pendientes.length; i++) {
-    if (activos.get(envioId)?.pausar) {
-      db.prepare("UPDATE envios SET estado='pausada' WHERE id=?").run(envioId);
-      log(envioId, "⏸️ Envío pausado. Puedes reanudarlo cuando quieras.", "warn");
-      activos.delete(envioId);
-      return { pausado: true, ok, err };
-    }
+    if (activos.get(envioId)?.pausar) { pausarAqui(envioId); return { pausado: true, ok, err }; }
     const c = pendientes[i];
     // Revisión de último momento: si lo agregaron a la lista negra mientras
     // el envío corría, NO se le envía y se sigue con el siguiente.
@@ -92,36 +188,50 @@ async function procesar(envioId) {
       if (sigue) { listaNegra.excluirContacto(envioId, c); log(envioId, `🚫 ${c.destino}: en lista negra, se omitió`, "warn"); }
       continue;
     }
-    let enviado = false, ultimoError = "";
-    for (let intento = 1; intento <= 3 && !enviado; intento++) {
-      // Si el proveedor tira una excepción (no solo { ok:false }), la tratamos
-      // igual que un error de envío para no cortar el resto de la campaña.
-      let r;
-      try {
-        r = await enviarSegunCanal(envio.canal, envio, c);
-      } catch (e) {
-        r = { ok: false, error: e.message || String(e) };
-      }
-      if (r.ok) { updOk.run(r.comprobante || "", intento, c.id); incEnv.run(envioId); ok++; enviado = true; }
-      else {
-        ultimoError = r.error || "error desconocido";
-        const esRed = /timeout|ECONN|network|socket|ETIMEDOUT/i.test(ultimoError);
-        if (esRed && intento < 3) {
-          log(envioId, `⚠️ ${c.destino}: fallo de red (intento ${intento}/3), reintentando...`, "warn");
-          try { await delay(3000); } catch (e) { log(envioId, `Error inesperado en la espera de reintento: ${e.message}`, "error"); }
-        }
-        else break;
-      }
-    }
-    if (!enviado) { updErr.run(ultimoError, 3, c.id); incErr.run(envioId); err++; if (err <= 5) log(envioId, `❌ ${c.destino}: ${ultimoError}`, "error"); }
+    const r = await enviarConReintentos(envioId, envio, c);
+    if (r.ok) { updOk.run(r.comprobante, 1, c.id); incEnv.run(envioId); ok++; }
+    else { updErr.run(r.error, c.id); incErr.run(envioId); err++; if (err <= 5) log(envioId, `❌ ${c.destino}: ${r.error}`, "error"); }
     if (i % 50 === 0 || i === pendientes.length - 1) log(envioId, `Progreso: ${i + 1}/${pendientes.length} · enviados ${ok} · errores ${err}`);
-    try { await delay(300); } catch (e) { log(envioId, `Error inesperado en la pausa entre envíos: ${e.message}`, "error"); }
+    await delay(300);
   }
 
-  db.prepare("UPDATE envios SET estado='finalizada', enviado_en=datetime('now','localtime') WHERE id=?").run(envioId);
-  log(envioId, `🏁 Envío finalizado. Enviados: ${ok} · Errores: ${err}`);
-  activos.delete(envioId);
-  return { finalizado: true, ok, err };
+  // Envío dividido: la segunda pasada la hace SOLO la última parte en terminar,
+  // para toda la familia y de a uno (no 16 partes reintentando a la vez).
+  if (hermanosPendientes(envio)) {
+    finalizar(envioId);
+    log(envioId, `🏁 Parte finalizada. Enviados: ${ok} · Errores: ${err}. Los fallidos se reintentan cuando terminen todas las partes.`);
+    return { finalizado: true, ok, err };
+  }
+
+  log(envioId, `Primera pasada terminada. Enviados: ${ok} · Errores: ${err}`);
+  const r2 = await segundaPasada(envioId, familiaDe(envio));
+  if (r2.pausado) return { pausado: true, ok: ok + r2.ok, err };
+
+  finalizar(envioId);
+  log(envioId, `🏁 Envío finalizado. Enviados: ${ok + r2.ok} · Errores: ${err - r2.ok}`);
+  return { finalizado: true, ok: ok + r2.ok, err: err - r2.ok };
+}
+
+// Reintento MANUAL (botón "Reintentar fallidos"): para envíos ya terminados.
+// Toma a TODOS los fallidos del envío (o de todas sus partes) y los vuelve a
+// enviar despacio. Devuelve cuántos va a reintentar; el trabajo sigue en segundo plano.
+function reintentarFallidos(envioId) {
+  const envio = db.prepare("SELECT * FROM envios WHERE id=?").get(envioId);
+  if (!envio) throw new Error("Envío no encontrado");
+  const ids = familiaDe(envio);
+  if (ids.some(id => activos.has(id))) throw new Error("El envío todavía está corriendo; espera a que termine.");
+  const marcas = ids.map(() => "?").join(",");
+  const fallidos = db.prepare(`SELECT COUNT(*) n FROM contactos WHERE envio_id IN (${marcas}) AND estado='error'`).get(...ids).n;
+  if (!fallidos) return { fallidos: 0 };
+
+  // En un envío dividido corre sobre la última parte (el original no tiene contactos)
+  const controlId = ids.length > 1 ? ids[ids.length - 1] : ids[0];
+  activos.set(controlId, { pausar: false });
+  db.prepare("UPDATE envios SET estado='en_curso' WHERE id=?").run(controlId);
+  segundaPasada(controlId, ids, { todos: true })
+    .then(r => { if (!r.pausado) finalizar(controlId); })
+    .catch(e => { log(controlId, "Error en el reintento: " + e.message, "error"); finalizar(controlId); });
+  return { fallidos };
 }
 
 function pausar(envioId) {
@@ -146,4 +256,4 @@ function retomarEnCurso() {
   if (huerfanos.length) console.log(`🔄 Retomados ${huerfanos.length} envío(s) que quedaron "en_curso" de una sesión anterior.`);
 }
 
-module.exports = { procesar, pausar, retomarEnCurso };
+module.exports = { procesar, pausar, retomarEnCurso, reintentarFallidos, esLimite };
