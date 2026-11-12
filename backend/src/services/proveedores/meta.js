@@ -1,3 +1,4 @@
+// ARCHIVO: backend/src/services/proveedores/meta.js
 // ─────────────────────────────────────────────────────────────
 //  ADAPTADOR META / WHATSAPP
 //  Ahora recibe las credenciales de una CUENTA (guardada en la BD),
@@ -79,6 +80,39 @@ async function estadoPlantilla(nombre, cuenta) {
   }
 }
 
+// Lista TODAS las plantillas de la cuenta en Meta (no solo las creadas desde
+// Jelcom): nombre, estado, idioma, categoría, si la cabecera pide imagen y
+// cuántas variables tiene el cuerpo. Con esto se valida un envío antes de crearlo.
+async function listarPlantillas(cuenta) {
+  const c = cred(cuenta);
+  if (!c.token || !c.businessId) return { ok: false, error: "La cuenta no tiene Business ID configurado" };
+  try {
+    const out = [];
+    let url = `${API}/${c.businessId}/message_templates`;
+    let params = { fields: "name,status,language,category,components,rejected_reason", limit: 200 };
+    for (let pagina = 0; url && pagina < 10; pagina++) {
+      const resp = await axios.get(url, { headers: headers(c), params, timeout: 20000 });
+      for (const t of resp.data?.data || []) {
+        const comps = t.components || [];
+        const cab = comps.find((x) => x.type === "HEADER");
+        const cuerpo = comps.find((x) => x.type === "BODY");
+        const botones = comps.find((x) => x.type === "BUTTONS");
+        const texto = cuerpo?.text || "";
+        out.push({
+          nombre: t.name, estado: t.status, idioma: t.language, categoria: String(t.category || "").toLowerCase(),
+          cabecera: cab ? String(cab.format || "TEXT").toLowerCase() : "ninguna",
+          variables_cuerpo: (texto.match(/\{\{\s*\d+\s*\}\}/g) || []).length,
+          cuerpo: texto, botones: (botones?.buttons || []).map((b) => b.text), motivo: t.rejected_reason || null,
+        });
+      }
+      url = resp.data?.paging?.next || null; params = undefined;
+    }
+    return { ok: true, plantillas: out };
+  } catch (e) {
+    return { ok: false, error: e.response?.data?.error?.message || e.message };
+  }
+}
+
 // Prueba de conexión: prueba una cuenta concreta o la del .env.
 async function probar(cuenta) {
   const c = cred(cuenta);
@@ -93,4 +127,4 @@ async function probar(cuenta) {
   }
 }
 
-module.exports = { enviarUno, crearPlantilla, estadoPlantilla, probar };
+module.exports = { enviarUno, crearPlantilla, estadoPlantilla, probar, listarPlantillas };

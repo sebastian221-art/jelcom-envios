@@ -25,6 +25,7 @@ app.use("/api/callcenter", require("./routes/callcenter"));
 app.use("/api/apikeys", require("./routes/apikeys"));      // administrar API keys de sistemas externos
 app.use("/api/lista-negra", require("./routes/listaNegra")); // contactos que no deben recibir mensajes
 app.use("/api/baja", require("./routes/baja"));               // enlace "darse de baja" de los correos (público)
+app.use("/api/tarifas", require("./routes/tarifas"));      // costo por canal (para calcular cuánto costó un envío)
 
 // ── API EXTERNA — para que otros sistemas (Satella, PSI, hospital, etc.)
 // creen envíos, los dividan, consulten estado y descarguen informes.
@@ -35,6 +36,10 @@ app.use("/api/external/campanas", verificarApiKey, require("./routes/campanas"))
 app.use("/api/external/cuentas", verificarApiKey, require("./routes/cuentas"));
 app.use("/api/external/cuentas-sms", verificarApiKey, require("./routes/cuentas_sms"));
 app.use("/api/external/lista-negra", verificarApiKey, require("./routes/listaNegra"));
+app.use("/api/external/whatsapp", verificarApiKey, whatsapp);                      // plantillas (listar en Meta, crear, estado)
+app.use("/api/external/voces", verificarApiKey, require("./routes/voces"));        // voces de ElevenLabs para el bot de voz
+app.use("/api/external/conexiones", verificarApiKey, require("./routes/conexiones")); // estado y saldo de proveedores
+app.use("/api/external/tarifas", verificarApiKey, require("./routes/tarifas"));    // tarifas por canal
 
 app.get("/api/health", (req, res) => res.json({ ok: true, servicio: "JELCOM Envíos", version: "3.1.0" }));
 

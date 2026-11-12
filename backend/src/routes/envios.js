@@ -2,7 +2,8 @@
 const express = require("express");
 const multer = require("multer");
 const { db } = require("../db");
-const { depurarTelefonos, depurarCorreos, analizarSMS } = require("../services/depurar");
+const { depurarTelefonos, depurarCorreos, analizarSMS, normTelefono, detectarColumna, EMAIL_RE, corregirDominio } = require("../services/depurar");
+const { leerTarifas } = require("./tarifas");
 const motor = require("../services/motor");
 const informe = require("../services/informe");
 const listaNegra = require("../services/listaNegra");
@@ -53,6 +54,29 @@ router.post("/analizar-sms", (req, res) => {
   const { texto } = req.body;
   if (!texto) return res.status(400).json({ error: "Falta texto" });
   res.json(analizarSMS(texto));
+});
+
+// Valida una base SIN crear nada: mismas reglas que /:id/base (depurar.js +
+// lista negra). multipart: archivo + canal (sms | whatsapp | correo | voz).
+// Sirve para revisar antes de crear el envío y explicar qué se descarta.
+router.post("/validar-base", upload.single("archivo"), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "Falta el archivo" });
+  const canal = String(req.body?.canal || "sms");
+  try {
+    const depura = canal === "correo" ? depurarCorreos : depurarTelefonos;
+    const { validos: crudos, descartados, totalBase } = depura(req.file.buffer);
+    const bloqueados = listaNegra.conjunto();
+    const validos = crudos.filter((v) => !listaNegra.enConjunto(bloqueados, v));
+    const col = detectarColumna(req.file.buffer, canal);
+    const inv = descartados.filter((d) => d.motivo === "invalido");
+    res.json({
+      canal, archivo: req.file.originalname, total_base: totalBase, validos: validos.length,
+      duplicados: descartados.filter((d) => d.motivo === "duplicado").length, invalidos: inv.length,
+      lista_negra: crudos.length - validos.length,
+      columna: col.columna, modo_lectura: col.modo, encabezados: col.encabezados.slice(0, 15),
+      muestra_validos: validos.slice(0, 5), muestra_invalidos: inv.slice(0, 8).map((d) => d.valor),
+    });
+  } catch (e) { res.status(400).json({ error: `No pude leer la base: ${e.message}` }); }
 });
 
 // Crear envío (asociado a una campaña/cliente)
@@ -286,4 +310,95 @@ router.post("/:id/dividir", async (req, res) => {
   res.json({ ids: nuevosIds });
 });
 
+// ── Familia: detalle de un envío (dividido o no) como UNO solo ──────────────
+// Raíz + partes + totales sumados + pendientes + últimos errores y logs de todas
+// las partes. Funciona consultando por el original o por cualquier parte.
+function familiaDe(id) {
+  let raiz = db.prepare(`SELECT e.*, c.nombre AS campana_nombre FROM envios e LEFT JOIN campanas c ON c.id=e.campana_id WHERE e.id=?`).get(id);
+  if (raiz && raiz.padre_id) raiz = db.prepare(`SELECT e.*, c.nombre AS campana_nombre FROM envios e LEFT JOIN campanas c ON c.id=e.campana_id WHERE e.id=?`).get(raiz.padre_id);
+  if (!raiz) return null;
+  const partes = hijosDe(raiz.id);
+  const ids = [raiz.id, ...partes.map((p) => p.id)];
+  const marcas = ids.map(() => "?").join(",");
+  const porEstado = {};
+  for (const r of db.prepare(`SELECT estado, COUNT(*) AS n FROM contactos WHERE envio_id IN (${marcas}) GROUP BY estado`).all(...ids)) porEstado[r.estado] = r.n;
+  const v = vistaAgregada(raiz);
+  const pendientes = porEstado.pendiente || 0;
+  const logs = db.prepare(`SELECT envio_id, ts, nivel, mensaje FROM logs WHERE envio_id IN (${marcas}) ORDER BY id DESC LIMIT 40`).all(...ids).reverse();
+  return {
+    raiz: { ...raiz, estado: v.estado }, partes, ids, dividido: partes.length > 0, estado: v.estado,
+    totales: { base: raiz.total_base || 0, validos: v.total_validos || 0, duplicados: raiz.total_dup || 0, invalidos: raiz.total_invalid || 0, enviados: v.total_enviados || 0, errores: v.total_errores || 0, pendientes, procesados: (v.total_enviados || 0) + (v.total_errores || 0), por_estado: porEstado },
+    errores_recientes: logs.filter((l) => l.nivel === "error").slice(-8).map((l) => l.mensaje),
+    logs,
+  };
+}
+
+router.get("/:id/familia", (req, res) => {
+  const f = familiaDe(req.params.id);
+  if (!f) return res.status(404).json({ error: "No existe" });
+  res.json(f);
+});
+
+// ── Costo: estimado (antes de disparar) y real (lo que ya salió) ────────────
+// Usa las tarifas de Configuración (routes/tarifas.js). Si falta una tarifa,
+// lo dice en `faltan` en vez de inventar un número. Suma todas las partes.
+function costoDe(id) {
+  const f = familiaDe(id);
+  if (!f) return null;
+  const e = f.raiz; const t = leerTarifas(); const faltan = []; const supuestos = [];
+  const tarifa = (...claves) => { for (const k of claves) if (t[k] != null && t[k] !== "") return Number(t[k]); faltan.push(claves[0]); return null; };
+  let unidad = "mensaje", precio = null, estimadas = f.totales.validos, reales = f.totales.enviados;
+  if (e.canal === "sms") {
+    const a = analizarSMS(e.cuerpo || "");
+    unidad = `segmento (${a.segmentos} por SMS, ${a.codificacion})`;
+    const cuenta = e.cuenta_sms_id ? db.prepare("SELECT proveedor FROM cuentas_sms WHERE id=?").get(e.cuenta_sms_id) : null;
+    precio = tarifa(`tarifa_sms_${(cuenta && cuenta.proveedor) || "hablame"}`, "tarifa_sms");
+    estimadas *= a.segmentos; reales *= a.segmentos;
+  } else if (e.canal === "whatsapp") {
+    const pl = e.plantilla ? db.prepare("SELECT categoria FROM plantillas WHERE nombre=? ORDER BY id DESC LIMIT 1").get(e.plantilla) : null;
+    const cat = String((pl && pl.categoria) || "marketing").toLowerCase();
+    if (!pl) supuestos.push("categoría de plantilla supuesta: marketing");
+    precio = tarifa(`tarifa_whatsapp_${cat}`, "tarifa_whatsapp"); unidad = `mensaje WhatsApp (${cat})`;
+  } else if (e.canal === "correo") {
+    precio = tarifa("tarifa_correo"); unidad = "correo";
+  } else if (e.canal === "voz") {
+    precio = tarifa("tarifa_voz_minuto"); unidad = "minuto de llamada contestada";
+    const marcas = f.ids.map(() => "?").join(",");
+    const r = db.prepare(`SELECT COALESCE(SUM((duracion_seg + 59) / 60), 0) AS min FROM contactos WHERE envio_id IN (${marcas}) AND estado='contestada'`).get(...f.ids);
+    reales = Number(r.min) || 0;
+    supuestos.push("estimado = 1 minuto por contacto si todos contestan (máximo)");
+  }
+  const r2 = (n) => (precio == null ? null : Math.round(n * precio * 100) / 100);
+  return { envio_id: e.id, canal: e.canal, moneda: t.moneda || "COP", unidad, tarifa: precio, unidades: { estimadas, reales }, costo: { estimado: r2(estimadas), real: r2(reales) }, faltan, supuestos, dividido: f.dividido };
+}
+
+router.get("/:id/costo", (req, res) => {
+  const c = costoDe(req.params.id);
+  if (!c) return res.status(404).json({ error: "No existe" });
+  res.json(c);
+});
+
+// ── Envío de prueba: UN mensaje con la configuración real del envío a un
+// destino de prueba (no toca contactos ni contadores). Para ver cómo llega.
+router.post("/:id/prueba", async (req, res) => {
+  const e = db.prepare("SELECT * FROM envios WHERE id=?").get(req.params.id);
+  if (!e) return res.status(404).json({ error: "No existe" });
+  let destino = String(req.body?.destino || "").trim();
+  if (e.canal === "correo") {
+    destino = corregirDominio(destino.toLowerCase());
+    if (!EMAIL_RE.test(destino)) return res.status(400).json({ error: "Destino de prueba inválido: necesito un correo." });
+  } else {
+    const d = destino.replace(/\D/g, "");
+    destino = normTelefono(d.length === 12 && d.startsWith("57") ? d.slice(2) : d);
+    if (!destino) return res.status(400).json({ error: "Destino de prueba inválido: celular de 10 dígitos que empiece en 3." });
+  }
+  try { await asegurarAudioVoz(e); } catch (err) { return res.status(400).json({ error: err.message }); }
+  let r;
+  try { r = await motor.enviarSegunCanal(e.canal, e, { destino }); } catch (err) { r = { ok: false, error: err.message }; }
+  db.prepare("INSERT INTO logs (envio_id, nivel, mensaje) VALUES (?,?,?)").run(e.id, r.ok ? "info" : "warn", `🧪 Prueba a ${destino}: ${r.ok ? "enviada" : "falló — " + r.error}`);
+  res.status(r.ok ? 200 : 400).json({ ok: !!r.ok, destino, comprobante: r.comprobante || null, error: r.ok ? undefined : r.error });
+});
+
 module.exports = router;
+module.exports.familiaDe = familiaDe;
+module.exports.costoDe = costoDe;

@@ -259,4 +259,4 @@ function retomarEnCurso() {
   if (huerfanos.length) console.log(`🔄 Retomados ${huerfanos.length} envío(s) que quedaron "en_curso" de una sesión anterior.`);
 }
 
-module.exports = { procesar, pausar, retomarEnCurso, reintentarFallidos, esLimite };
+module.exports = { procesar, pausar, retomarEnCurso, reintentarFallidos, esLimite, enviarSegunCanal };

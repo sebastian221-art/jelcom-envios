@@ -1,3 +1,4 @@
+// ARCHIVO: backend/src/routes/whatsapp.js
 // Rutas específicas de WhatsApp: crear plantilla (Modo B) y consultar estado.
 // El envío en sí usa las rutas de /api/envios (canal 'whatsapp'), igual que SMS.
 const express = require("express");
@@ -35,6 +36,17 @@ function retomarSondeosPendientes() {
 // Listar plantillas creadas desde el sistema
 router.get("/plantillas", (req, res) => {
   res.json(db.prepare("SELECT * FROM plantillas ORDER BY id DESC").all());
+});
+
+// Plantillas reales de la cuenta en Meta (todas, no solo las creadas aquí).
+// ?cuenta_wa_id=N (si no, usa la del .env).
+router.get("/plantillas-meta", async (req, res) => {
+  const id = req.query.cuenta_wa_id;
+  const cuenta = id ? db.prepare("SELECT * FROM cuentas_whatsapp WHERE id=?").get(id) : null;
+  if (id && !cuenta) return res.status(404).json({ error: `La cuenta de WhatsApp ${id} no existe` });
+  const r = await meta.listarPlantillas(cuenta);
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  res.json(r.plantillas);
 });
 
 // Crear plantilla (Modo B) -> la manda a Meta y arranca el sondeo automático

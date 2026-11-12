@@ -1,3 +1,4 @@
+// ARCHIVO: backend/src/services/depurar.js
 // ─────────────────────────────────────────────────────────────
 //  DEPURACIÓN — un solo lugar para toda la plataforma.
 //  Reglas que ya validamos campaña por campaña:
@@ -145,4 +146,19 @@ function analizarSMS(texto) {
   return { codificacion: esGSM ? "GSM-7" : "UCS-2", caracteres: chars.length, segmentos };
 }
 
-module.exports = { depurarTelefonos, depurarCorreos, analizarSMS, normTelefono };
+// Dice qué columna se va a usar (para explicarle al usuario cómo se leyó su base).
+function detectarColumna(buffer, canal) {
+  const wb = XLSX.read(buffer, { type: "buffer" });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const matriz = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+  const palabras = canal === "correo" ? PALABRAS_CORREO : PALABRAS_TELEFONO;
+  const idx = buscarColumnaPorEncabezado(matriz, palabras);
+  return {
+    encabezados: (matriz[0] || []).map((h) => String(h)),
+    filas: matriz.length,
+    columna: idx !== null ? String(matriz[0][idx]) : null,
+    modo: idx !== null ? "encabezado" : "primera_celda",
+  };
+}
+
+module.exports = { depurarTelefonos, depurarCorreos, analizarSMS, normTelefono, detectarColumna, EMAIL_RE, corregirDominio };
